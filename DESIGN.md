@@ -128,6 +128,17 @@ the rest keep running. Nothing polls: every source is event-driven.
    dmsh msg '{"cmd":"push","id":"x","title":"Hi","ttl_ms":3000}'   # raw protocol
    dmsh schema                                  # JSON Schema of requests/responses
    ```
+   Actions turn an activity into a question an agent can wait on:
+   ```sh
+   # Prints the clicked key (exit 0), or "dismissed"/"expired" (exit 1).
+   dmsh activity push --id perm --title "Claude needs permission" --placement center \
+       --priority critical --icon alert --action allow:Allow --action deny:Deny --wait
+   dmsh activity invoke perm allow     # same as clicking the button
+   dmsh events                         # stream action_invoked / removed events as JSON
+   ```
+   The `default` action is invoked by clicking the activity itself (not drawn as a
+   button). Invoking dismisses the activity unless it has `keep_on_action` (media).
+
    Lifecycle rules: `ttl` counts from the last push of an id (a repeatedly pushed OSD stays
    up); a `flow` activity's center phase counts from its first push (updating a
    notification doesn't pop it back). Center winner: priority, then transient over
@@ -154,7 +165,9 @@ the rest keep running. Nothing polls: every source is event-driven.
 2. **Sources**: niri, clock, volume/brightness OSD, MPRIS, notifications, battery, Wi-Fi.
    Transient center activities show only on the focused output. ✓
 3. **Text and icons, spring-based morphing, center→right slide, hover expand.** ✓
-4. Expanded views: notification list and actions, media controls, tray.
+4. **Expanded views**: clickable buttons with hover highlights, notification actions
+   (`ActionInvoked`, `resident`), right-island list with per-row close and "Clear all",
+   media controls (previous / play-pause / next over MPRIS). ✓ Tray: next.
 5. Config (KDL), niri keybind integration (e.g. `dmsh focus`).
 
 ## Open questions

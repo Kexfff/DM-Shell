@@ -1,11 +1,14 @@
 //! Wayland side: one full-width layer surface per output, both islands drawn into it.
 
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use dmsh_core::{
-    Activities, IslandKind, Stage, Theme, View,
-    ipc::{Reply, Request, Response, StateDump},
+    Activities, IslandKind, Stage, Target, Theme, View,
+    activity::Island,
+    ipc::{Event, Reply, Request, Response, StateDump},
 };
 use dmsh_render::Renderer;
 use dmsh_sources::{Command as SourceCommand, Event as SourceEvent, Removal};
@@ -48,6 +51,9 @@ use wayland_protocols::wp::{
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
     viewporter::client::{wp_viewport, wp_viewporter},
 };
+
+/// Linux input event code of the primary mouse button.
+const BTN_LEFT: u32 = 0x110;
 
 /// Fractional scales arrive as multiples of 1/120.
 const SCALE_DENOM: u32 = 120;
@@ -95,6 +101,7 @@ pub fn run() -> Result<()> {
         loop_handle: event_loop.handle(),
         timer: None,
         sources: None,
+        subscribers: Vec::new(),
     };
 
     // Sources run on their own thread and report back through this channel.
@@ -152,6 +159,8 @@ pub struct Shell {
     /// Fires at the arbiter's next deadline (expiry or center→right move).
     timer: Option<RegistrationToken>,
     sources: Option<dmsh_sources::Handle>,
+    /// IPC connections that asked for the event stream.
+    subscribers: Vec<UnixStream>,
 }
 
 /// Transient center activities show only on the focused output, so outputs can differ.
@@ -210,12 +219,38 @@ impl Shell {
                 }
                 Ok(Reply::Dismissed { existed })
             }
-            Request::Clear => {
-                for id in self.activities.clear() {
+            Request::Clear { island } => {
+                let removed = match island {
+                    Some(Island::Right) => self.activities.clear_right(now),
+                    Some(Island::Center) => Vec::new(),
+                    None => self.activities.clear(),
+                };
+                for id in removed {
                     self.notify_removed(id, Removal::Dismissed);
                 }
                 Ok(Reply::Done)
             }
+            Request::Invoke { id, key } => match self.activities.action(&id, &key) {
+                None => Err(format!("`{id}` has no action `{key}`")),
+                Some(keep) => {
+                    self.broadcast(&Event::ActionInvoked {
+                        id: id.clone(),
+                        key: key.clone(),
+                    });
+                    if let Some(sources) = &self.sources {
+                        sources.send(SourceCommand::Invoked {
+                            id: id.clone(),
+                            key,
+                        });
+                    }
+                    if !keep && self.activities.dismiss(&id) {
+                        self.notify_removed(id, Removal::Dismissed);
+                    }
+                    Ok(Reply::Done)
+                }
+            },
+            // The IPC server registers the connection; this just acknowledges it.
+            Request::Subscribe => Ok(Reply::Subscribed),
             Request::State => Ok(Reply::State(Box::new(StateDump {
                 view: self.views.focused.clone(),
                 focused_output: self.focused_output.clone(),
@@ -291,10 +326,49 @@ impl Shell {
         }
     }
 
-    /// Lets the owning source know (e.g. to emit `NotificationClosed`).
-    fn notify_removed(&self, id: String, reason: Removal) {
+    /// Tells subscribers and the owning source (e.g. to emit `NotificationClosed`).
+    fn notify_removed(&mut self, id: String, reason: Removal) {
+        self.broadcast(&Event::Removed {
+            id: id.clone(),
+            reason,
+        });
         if let Some(sources) = &self.sources {
             sources.send(SourceCommand::Removed { id, reason });
+        }
+    }
+
+    pub fn add_subscriber(&mut self, stream: UnixStream) {
+        self.subscribers.push(stream);
+    }
+
+    /// Sends an event to every subscriber; ones that are gone or not reading are dropped.
+    fn broadcast(&mut self, event: &Event) {
+        if self.subscribers.is_empty() {
+            return;
+        }
+        let mut line = serde_json::to_vec(event).expect("events always serialize");
+        line.push(b'\n');
+        self.subscribers.retain(|s| (&*s).write_all(&line).is_ok());
+    }
+
+    /// Performs a click on an island.
+    fn click(&mut self, target: Target) {
+        let request = match target {
+            Target::Invoke { id, key } => Request::Invoke { id, key },
+            Target::Dismiss { id } => Request::Dismiss { id },
+            Target::ClearRight => Request::Clear {
+                island: Some(Island::Right),
+            },
+        };
+        if let Response::Error(e) = self.handle(request) {
+            log::warn!("click failed: {e}");
+        }
+    }
+
+    fn set_pointer(&mut self, index: usize, pointer: Option<(f32, f32)>) {
+        let island = &mut self.islands[index];
+        if island.stage.set_pointer(pointer) && !island.frame_pending {
+            self.draw(index);
         }
     }
 
@@ -694,18 +768,31 @@ impl PointerHandler for Shell {
                 continue;
             };
             let (x, y) = (event.position.0 as f32, event.position.1 as f32);
-            let hover = match event.kind {
+            match event.kind {
                 PointerEventKind::Enter { serial } => {
                     if let Some(device) = &self.cursor_device {
                         device.set_shape(serial, Shape::Default);
                     }
-                    self.islands[index].stage.hit(x, y)
+                    let hover = self.islands[index].stage.hit(x, y);
+                    self.set_hover(index, hover);
+                    self.set_pointer(index, Some((x, y)));
                 }
-                PointerEventKind::Motion { .. } => self.islands[index].stage.hit(x, y),
-                PointerEventKind::Leave { .. } => None,
-                _ => continue,
-            };
-            self.set_hover(index, hover);
+                PointerEventKind::Motion { .. } => {
+                    let hover = self.islands[index].stage.hit(x, y);
+                    self.set_hover(index, hover);
+                    self.set_pointer(index, Some((x, y)));
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.set_pointer(index, None);
+                    self.set_hover(index, None);
+                }
+                PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                    if let Some(target) = self.islands[index].stage.target_at(x, y) {
+                        self.click(target);
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }

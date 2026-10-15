@@ -4,7 +4,7 @@
 //! Text is measured through the [`Measure`] trait so this module stays free of fonts;
 //! the renderer implements it, tests use a fake.
 
-use crate::activity::{ActivityView, Priority, View};
+use crate::activity::{Action, ActivityView, DEFAULT_ACTION, Priority, View};
 
 /// Axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -123,6 +123,8 @@ pub struct Theme {
     pub text_secondary: Color,
     pub progress_track: Color,
     pub progress_fill: Color,
+    pub button: Color,
+    pub highlight: Color,
     /// Icon color per priority, low to critical.
     pub priority_colors: [Color; 4],
 }
@@ -146,6 +148,8 @@ impl Default for Theme {
             text_secondary: Color::rgba(152, 152, 157, 255),
             progress_track: Color::rgba(255, 255, 255, 45),
             progress_fill: Color::WHITE,
+            button: Color::rgba(255, 255, 255, 30),
+            highlight: Color::rgba(255, 255, 255, 22),
             // Apple system gray, white, orange, red.
             priority_colors: [
                 Color::rgba(142, 142, 147, 255),
@@ -245,12 +249,30 @@ pub struct Scene {
     pub islands: Vec<Rect>,
 }
 
+/// What clicking somewhere does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Invoke { id: String, key: String },
+    Dismiss { id: String },
+    ClearRight,
+}
+
+/// A clickable area; the first hit containing the pointer wins.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hit {
+    pub rect: Rect,
+    pub target: Target,
+    /// Show a hover highlight (buttons, list rows), not for whole-island clicks.
+    pub highlight: bool,
+}
+
 /// What an island shows, laid out at its natural size with items relative to (0, 0).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Content {
     pub w: f32,
     pub h: f32,
     pub items: Vec<Draw>,
+    pub hits: Vec<Hit>,
     /// Changes when the content is a different thing (not just an update), which
     /// triggers a cross-fade.
     pub key: String,
@@ -355,6 +377,7 @@ fn idle(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         w,
         h,
         items: vec![place(t, (w - tw) / 2.0, (h - th) / 2.0)],
+        hits: Vec::new(),
         key: "idle".into(),
     }
 }
@@ -375,6 +398,7 @@ fn idle_expanded(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
             place(t, (w - tw) / 2.0, EXPANDED_PAD),
             place(d, (w - dw) / 2.0, EXPANDED_PAD + th + 2.0),
         ],
+        hits: Vec::new(),
         key: "idle:expanded".into(),
     }
 }
@@ -402,6 +426,7 @@ fn activity_compact(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Con
         w,
         h,
         items,
+        hits: default_hit(a, w, h).into_iter().collect(),
         key: format!("a:{}", a.id),
     }
 }
@@ -432,10 +457,33 @@ fn activity_expanded(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Co
         items.extend(bar(theme, Rect::new(EXPANDED_PAD, y + 10.0, inner, 5.0), p));
         y += 10.0 + 5.0;
     }
+    let mut hits = Vec::new();
+    let buttons: Vec<&Action> = a
+        .actions
+        .iter()
+        .filter(|b| b.key != DEFAULT_ACTION)
+        .collect();
+    if !buttons.is_empty() {
+        y += 12.0;
+        y += action_row(
+            a,
+            &buttons,
+            theme,
+            m,
+            EXPANDED_PAD,
+            y,
+            inner,
+            &mut items,
+            &mut hits,
+        );
+    }
+    let h = y + EXPANDED_PAD;
+    hits.extend(default_hit(a, w, h));
     Content {
         w,
-        h: y + EXPANDED_PAD,
+        h,
         items,
+        hits,
         key: format!("a:{}:expanded", a.id),
     }
 }
@@ -462,6 +510,7 @@ fn right_compact(a: &ActivityView, total: usize, theme: &Theme, m: &mut dyn Meas
         w,
         h,
         items,
+        hits: Vec::new(),
         key: format!("r:{}", a.id),
     }
 }
@@ -469,11 +518,14 @@ fn right_compact(a: &ActivityView, total: usize, theme: &Theme, m: &mut dyn Meas
 fn right_list(items: &[ActivityView], total: usize, theme: &Theme, m: &mut dyn Measure) -> Content {
     let w = theme.right_expanded_width;
     let icon_size = 18.0;
+    let close = 28.0;
     let text_x = 14.0 + icon_size + 12.0;
-    let text_w = w - text_x - 14.0;
+    let text_w = w - text_x - 8.0 - close - 6.0;
     let mut draws = Vec::new();
+    let mut hits = Vec::new();
     let mut y = 8.0;
     for a in items {
+        let row = Rect::new(6.0, y, w - 12.0, ROW_HEIGHT);
         let title_style = TextStyle::new(13.0, Weight::Semibold);
         let (t, _, th) = text(m, &a.title, title_style, theme.text, text_w, 1);
         let icon_y = y + (ROW_HEIGHT - icon_size) / 2.0;
@@ -488,6 +540,37 @@ fn right_list(items: &[ActivityView], total: usize, theme: &Theme, m: &mut dyn M
             }
             None => draws.push(place(t, text_x, y + (ROW_HEIGHT - th) / 2.0)),
         }
+        // Close button first so it wins over the row.
+        let close_rect = Rect::new(
+            w - 8.0 - close,
+            y + (ROW_HEIGHT - close) / 2.0,
+            close,
+            close,
+        );
+        draws.push(Draw::Icon(IconDraw {
+            name: "x".into(),
+            rect: Rect::new(close_rect.x + 8.0, close_rect.y + 8.0, 12.0, 12.0),
+            color: theme.text_secondary,
+        }));
+        hits.push(Hit {
+            rect: close_rect,
+            target: Target::Dismiss { id: a.id.clone() },
+            highlight: true,
+        });
+        // Clicking a row opens it (its default action) or, without one, dismisses it.
+        let target = if a.has_action(DEFAULT_ACTION) {
+            Target::Invoke {
+                id: a.id.clone(),
+                key: DEFAULT_ACTION.into(),
+            }
+        } else {
+            Target::Dismiss { id: a.id.clone() }
+        };
+        hits.push(Hit {
+            rect: row,
+            target,
+            highlight: true,
+        });
         y += ROW_HEIGHT;
     }
     if total > items.len() {
@@ -497,12 +580,100 @@ fn right_list(items: &[ActivityView], total: usize, theme: &Theme, m: &mut dyn M
         draws.push(place(t, (w - tw) / 2.0, y + (24.0 - th) / 2.0));
         y += 24.0;
     }
+    if total > 1 {
+        let button = Rect::new(6.0, y + 2.0, w - 12.0, 30.0);
+        let style = TextStyle::new(12.5, Weight::Semibold);
+        let (t, tw, th) = text(m, "Clear all", style, theme.text_secondary, text_w, 1);
+        draws.push(place(t, (w - tw) / 2.0, button.y + (button.h - th) / 2.0));
+        hits.push(Hit {
+            rect: button,
+            target: Target::ClearRight,
+            highlight: true,
+        });
+        y += 34.0;
+    }
     Content {
         w,
         h: y + 8.0,
         items: draws,
+        hits,
         key: "r:list".into(),
     }
+}
+
+/// Clicking anywhere on an activity with a `default` action invokes it.
+fn default_hit(a: &ActivityView, w: f32, h: f32) -> Option<Hit> {
+    a.has_action(DEFAULT_ACTION).then(|| Hit {
+        rect: Rect::new(0.0, 0.0, w, h),
+        target: Target::Invoke {
+            id: a.id.clone(),
+            key: DEFAULT_ACTION.into(),
+        },
+        highlight: false,
+    })
+}
+
+/// Lays out action buttons at `y`; returns the row height. Icon-only actions (media
+/// controls) become a centered row of icon buttons, others share the width equally.
+#[allow(clippy::too_many_arguments)]
+fn action_row(
+    a: &ActivityView,
+    buttons: &[&Action],
+    theme: &Theme,
+    m: &mut dyn Measure,
+    x: f32,
+    y: f32,
+    width: f32,
+    items: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) -> f32 {
+    let invoke = |b: &Action| Target::Invoke {
+        id: a.id.clone(),
+        key: b.key.clone(),
+    };
+    let icon_only = buttons
+        .iter()
+        .all(|b| b.icon.is_some() && b.label.is_empty());
+    if icon_only {
+        let (bw, bh, gap, size) = (48.0, 36.0, 14.0, 22.0);
+        let total = buttons.len() as f32 * bw + (buttons.len() - 1) as f32 * gap;
+        let mut bx = x + (width - total) / 2.0;
+        for b in buttons {
+            let rect = Rect::new(bx, y, bw, bh);
+            items.push(Draw::Icon(IconDraw {
+                name: b.icon.clone().unwrap_or_default(),
+                rect: Rect::new(bx + (bw - size) / 2.0, y + (bh - size) / 2.0, size, size),
+                color: theme.text,
+            }));
+            hits.push(Hit {
+                rect,
+                target: invoke(b),
+                highlight: true,
+            });
+            bx += bw + gap;
+        }
+        return bh;
+    }
+    let (bh, gap) = (32.0, 8.0);
+    let bw = (width - gap * (buttons.len() - 1) as f32) / buttons.len() as f32;
+    for (i, b) in buttons.iter().enumerate() {
+        let rect = Rect::new(x + i as f32 * (bw + gap), y, bw, bh);
+        items.push(Draw::Rect(RoundRect {
+            rect,
+            radius: 10.0,
+            color: theme.button,
+        }));
+        let style = TextStyle::new(13.0, Weight::Semibold);
+        let label = if b.label.is_empty() { &b.key } else { &b.label };
+        let (t, tw, th) = text(m, label, style, theme.text, bw - 16.0, 1);
+        items.push(place(t, rect.x + (bw - tw) / 2.0, y + (bh - th) / 2.0));
+        hits.push(Hit {
+            rect,
+            target: invoke(b),
+            highlight: true,
+        });
+    }
+    bh
 }
 
 #[cfg(test)]
@@ -534,6 +705,7 @@ pub(crate) mod tests {
             body: Some("body text".into()),
             progress,
             icon: Some("bell".into()),
+            actions: Vec::new(),
             priority: Priority::Normal,
         }
     }
@@ -617,8 +789,67 @@ pub(crate) mod tests {
         assert!(compact.w > single.w, "+1 badge adds width");
 
         let list = right_content(&view(None, &items), true, &theme, &mut m).unwrap();
-        assert_eq!(list.h, 8.0 + 2.0 * ROW_HEIGHT + 8.0);
+        assert_eq!(
+            list.h,
+            8.0 + 2.0 * ROW_HEIGHT + 34.0 + 8.0,
+            "rows + clear all"
+        );
+        // Close button, row, close button, row, clear all.
+        assert_eq!(list.hits.len(), 5);
+        assert_eq!(list.hits[0].target, Target::Dismiss { id: "a".into() });
+        assert_eq!(list.hits[4].target, Target::ClearRight);
         assert!(right_content(&view(None, &[]), false, &theme, &mut m).is_none());
+    }
+
+    #[test]
+    fn expanded_actions_become_buttons_and_default_is_last() {
+        let theme = Theme::default();
+        let a = ActivityView {
+            actions: vec![
+                Action::new("default", ""),
+                Action::new("allow", "Allow"),
+                Action::new("deny", "Deny"),
+            ],
+            ..activity("perm", None)
+        };
+        let without = center_content(
+            &view(Some(activity("perm", None)), &[]),
+            true,
+            &theme,
+            &mut FakeMeasure,
+        );
+        let c = center_content(&view(Some(a), &[]), true, &theme, &mut FakeMeasure);
+        assert!(c.h > without.h, "button row adds height");
+        let keys: Vec<_> = c
+            .hits
+            .iter()
+            .map(|h| match &h.target {
+                Target::Invoke { key, .. } => key.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(keys, ["allow", "deny", "default"]);
+        assert!(!c.hits[2].highlight);
+    }
+
+    #[test]
+    fn icon_only_actions_are_centered() {
+        let theme = Theme::default();
+        let icon_action = |key: &str, icon: &str| Action {
+            icon: Some(icon.into()),
+            ..Action::new(key, "")
+        };
+        let a = ActivityView {
+            actions: vec![
+                icon_action("prev", "skip-back"),
+                icon_action("next", "skip-forward"),
+            ],
+            ..activity("media", None)
+        };
+        let c = center_content(&view(Some(a), &[]), true, &theme, &mut FakeMeasure);
+        let (l, r) = (c.hits[0].rect, c.hits[1].rect);
+        let mid = (l.x + r.right()) / 2.0;
+        assert!((mid - c.w / 2.0).abs() < 0.01);
     }
 
     #[test]

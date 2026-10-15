@@ -7,8 +7,9 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use dmsh_core::{
-    ActivitySpec, IslandKind, Placement, Priority,
-    ipc::{Reply, Request, Response},
+    Action, ActivitySpec, IslandKind, Placement, Priority,
+    activity::Island,
+    ipc::{Event, Reply, Request, Response},
 };
 
 /// A minimal dynamic-island shell for niri.
@@ -31,6 +32,8 @@ enum Command {
     Activity(ActivityCommand),
     /// Print what the islands show and every live activity, as JSON.
     State,
+    /// Stream events (actions invoked, activities removed) as JSON lines.
+    Events,
     /// Send one raw JSON request line and print the raw response.
     Msg {
         /// e.g. '{"cmd":"push","id":"x","title":"Hello"}'
@@ -75,6 +78,9 @@ enum Command {
         /// Keep only a logical x range: <x>,<width>.
         #[arg(long, value_parser = parse_crop)]
         crop: Option<(f32, f32)>,
+        /// Pointer position for hover highlights: <x>,<y> (logical).
+        #[arg(long, value_parser = parse_crop)]
+        pointer: Option<(f32, f32)>,
     },
 }
 
@@ -94,6 +100,17 @@ enum ActivityCommand {
         /// Built-in icon name (see `dmsh icons`).
         #[arg(long)]
         icon: Option<String>,
+        /// A button, as `key:Label` (repeatable). The key `default` is invoked by
+        /// clicking the activity itself.
+        #[arg(long = "action", value_parser = parse_action)]
+        actions: Vec<Action>,
+        /// Keep the activity after an action is invoked.
+        #[arg(long)]
+        keep_on_action: bool,
+        /// Wait until an action is invoked (prints its key, exit 0) or the activity is
+        /// removed (prints the reason, exit 1).
+        #[arg(long)]
+        wait: bool,
         /// center, right, or flow (center briefly, then right).
         #[arg(long, value_parser = parse_enum::<Placement>, default_value = "flow")]
         placement: Placement,
@@ -109,8 +126,14 @@ enum ActivityCommand {
     },
     /// Remove an activity.
     Dismiss { id: String },
+    /// Invoke an activity's action, as if its button was clicked.
+    Invoke { id: String, key: String },
     /// Remove all activities.
-    Clear,
+    Clear {
+        /// Only the right island's.
+        #[arg(long)]
+        right: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +150,12 @@ fn main() -> Result<()> {
                 bail!("unexpected reply to state");
             };
             println!("{}", serde_json::to_string_pretty(&state)?);
+            Ok(())
+        }
+        Command::Events => {
+            for event in ipc::subscribe()? {
+                println!("{}", serde_json::to_string(&event?)?);
+            }
             Ok(())
         }
         Command::Msg { json } => {
@@ -155,6 +184,7 @@ fn main() -> Result<()> {
             date,
             background,
             crop,
+            pointer,
         } => headless::render(headless::Options {
             output,
             width,
@@ -168,6 +198,7 @@ fn main() -> Result<()> {
             date,
             background,
             crop,
+            pointer,
         }),
     }
 }
@@ -180,27 +211,66 @@ fn activity(cmd: ActivityCommand) -> Result<()> {
             body,
             progress,
             icon,
+            actions,
+            keep_on_action,
+            wait,
             placement,
             priority,
             ttl,
             center_for,
-        } => Request::Push(ActivitySpec {
-            body,
-            progress,
-            icon,
-            placement,
-            priority,
-            ttl_ms: ttl.map(|d| d.as_millis() as u64),
-            center_ms: center_for.as_millis() as u64,
-            ..ActivitySpec::new(id, title)
-        }),
+        } => {
+            let spec = ActivitySpec {
+                body,
+                progress,
+                icon,
+                actions,
+                keep_on_action,
+                placement,
+                priority,
+                ttl_ms: ttl.map(|d| d.as_millis() as u64),
+                center_ms: center_for.as_millis() as u64,
+                ..ActivitySpec::new(id, title)
+            };
+            if wait {
+                return push_and_wait(spec);
+            }
+            Request::Push(spec)
+        }
         ActivityCommand::Dismiss { id } => Request::Dismiss { id },
-        ActivityCommand::Clear => Request::Clear,
+        ActivityCommand::Invoke { id, key } => Request::Invoke { id, key },
+        ActivityCommand::Clear { right } => Request::Clear {
+            island: right.then_some(Island::Right),
+        },
     };
     if let Reply::Dismissed { existed: false } = call(&request)? {
         bail!("no such activity");
     }
     Ok(())
+}
+
+/// Pushes an activity and blocks until it's answered or removed.
+fn push_and_wait(spec: ActivitySpec) -> Result<()> {
+    // Subscribe first so a fast click can't be missed.
+    let events = ipc::subscribe()?;
+    let id = spec.id.clone();
+    call(&Request::Push(spec))?;
+    for event in events {
+        match event? {
+            Event::ActionInvoked { id: e, key } if e == id => {
+                println!("{key}");
+                return Ok(());
+            }
+            Event::Removed { id: e, reason } if e == id => {
+                println!(
+                    "{}",
+                    serde_json::to_value(reason)?.as_str().unwrap_or("removed")
+                );
+                std::process::exit(1);
+            }
+            _ => {}
+        }
+    }
+    bail!("the shell went away")
 }
 
 /// Sends a request and turns an error response into an error.
@@ -230,6 +300,15 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Duration::try_from_secs_f64(secs).map_err(|e| e.to_string())
 }
 
+/// Parses `key:Label`, or `key` alone (label = key).
+fn parse_action(s: &str) -> Result<Action, String> {
+    let (key, label) = s.split_once(':').unwrap_or((s, s));
+    if key.is_empty() {
+        return Err("expected key:Label".into());
+    }
+    Ok(Action::new(key, label))
+}
+
 fn parse_hover(s: &str) -> Result<IslandKind, String> {
     match s {
         "center" => Ok(IslandKind::Center),
@@ -238,7 +317,7 @@ fn parse_hover(s: &str) -> Result<IslandKind, String> {
     }
 }
 
-/// Parses `<x>,<width>`.
+/// Parses a pair of numbers: `<a>,<b>`.
 fn parse_crop(s: &str) -> Result<(f32, f32), String> {
     let (x, w) = s.split_once(',').ok_or("expected <x>,<width>")?;
     let parse = |v: &str| v.trim().parse::<f32>().map_err(|e| e.to_string());

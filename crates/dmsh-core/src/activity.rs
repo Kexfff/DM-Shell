@@ -11,6 +11,33 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The action invoked by clicking an activity itself rather than one of its buttons.
+pub const DEFAULT_ACTION: &str = "default";
+/// Most actions per activity.
+pub const MAX_ACTIONS: usize = 8;
+
+/// Something the user can do with an activity: a button, or [`DEFAULT_ACTION`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Action {
+    pub key: String,
+    /// Button text; may be empty for icon-only buttons.
+    #[serde(default)]
+    pub label: String,
+    /// Built-in icon name for icon buttons (e.g. media controls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+impl Action {
+    pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            icon: None,
+        }
+    }
+}
+
 /// Most activities kept at once; pushes beyond this are rejected.
 pub const MAX_ACTIVITIES: usize = 256;
 /// Longest id, title or body accepted, in bytes.
@@ -56,6 +83,12 @@ pub struct ActivitySpec {
     /// Built-in icon name, e.g. `bell`, `volume`, `terminal` (see `dmsh icons`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Buttons, plus optionally a `default` action for clicking the activity itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+    /// Stay after an action is invoked (media controls); otherwise invoking dismisses.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_on_action: bool,
     #[serde(default)]
     pub placement: Placement,
     #[serde(default)]
@@ -80,6 +113,8 @@ impl ActivitySpec {
             body: None,
             progress: None,
             icon: None,
+            actions: Vec::new(),
+            keep_on_action: false,
             placement: Placement::default(),
             priority: Priority::default(),
             ttl_ms: None,
@@ -97,6 +132,16 @@ impl ActivitySpec {
             return Err(format!(
                 "id, title and body are limited to {MAX_TEXT_LEN} bytes"
             ));
+        }
+        if self.actions.len() > MAX_ACTIONS {
+            return Err(format!("at most {MAX_ACTIONS} actions"));
+        }
+        if self
+            .actions
+            .iter()
+            .any(|a| a.key.is_empty() || too_long(&a.key) || too_long(&a.label))
+        {
+            return Err("action keys must be non-empty; keys and labels are length-limited".into());
         }
         if let Some(p) = self.progress {
             if !p.is_finite() {
@@ -127,7 +172,15 @@ pub struct ActivityView {
     pub progress: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
     pub priority: Priority,
+}
+
+impl ActivityView {
+    pub fn has_action(&self, key: &str) -> bool {
+        self.actions.iter().any(|a| a.key == key)
+    }
 }
 
 /// Most right-island items carried in a view (the expanded list shows these).
@@ -212,6 +265,7 @@ impl Entry {
             body: self.spec.body.clone(),
             progress: self.spec.progress,
             icon: self.spec.icon.clone(),
+            actions: self.spec.actions.clone(),
             priority: self.spec.priority,
         }
     }
@@ -249,6 +303,22 @@ impl Activities {
         let before = self.entries.len();
         self.entries.retain(|e| e.spec.id != id);
         self.entries.len() != before
+    }
+
+    /// Whether `id` has an action `key`; `Some(keep_on_action)` if it does.
+    pub fn action(&self, id: &str, key: &str) -> Option<bool> {
+        let entry = self.entries.iter().find(|e| e.spec.id == id)?;
+        let has = entry.spec.actions.iter().any(|a| a.key == key);
+        has.then_some(entry.spec.keep_on_action)
+    }
+
+    /// Removes everything on the right island; returns the removed ids.
+    pub fn clear_right(&mut self, now: Instant) -> Vec<String> {
+        let (right, rest) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|e| e.island(now) == Island::Right);
+        self.entries = rest;
+        right.into_iter().map(|e: Entry| e.spec.id).collect()
     }
 
     /// Removes everything; returns the removed ids.
@@ -494,6 +564,28 @@ mod tests {
         assert_eq!(a.states(t0)[0].spec.progress, Some(1.0));
         assert!(a.dismiss("p"));
         assert!(!a.dismiss("p"));
+    }
+
+    #[test]
+    fn actions_lookup_and_clear_right() {
+        let t0 = Instant::now();
+        let mut a = Activities::default();
+        let with_action = ActivitySpec {
+            actions: vec![Action::new("allow", "Allow")],
+            ..spec("perm", Placement::Center)
+        };
+        a.push(with_action, t0).unwrap();
+        a.push(spec("tg", Placement::Right), t0).unwrap();
+        assert_eq!(a.action("perm", "allow"), Some(false));
+        assert_eq!(a.action("perm", "deny"), None);
+        assert_eq!(a.clear_right(t0), ["tg"]);
+        assert_eq!(a.states(t0).len(), 1);
+
+        let empty_key = ActivitySpec {
+            actions: vec![Action::new("", "x")],
+            ..spec("bad", Placement::Center)
+        };
+        assert!(a.push(empty_key, t0).is_err());
     }
 
     #[test]

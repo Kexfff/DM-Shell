@@ -27,6 +27,8 @@ pub struct Options {
     pub background: Option<String>,
     /// Logical `(x, width)` to keep.
     pub crop: Option<(f32, f32)>,
+    /// Pointer position for hover highlights, in logical surface coordinates.
+    pub pointer: Option<(f32, f32)>,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -58,6 +60,7 @@ pub fn render(opts: Options) -> Result<()> {
             stage.update(opts.width, &view, hover, &theme, &mut renderer);
             last = Some((view, hover));
         }
+        stage.set_pointer(opts.pointer);
         if let Some(interval) = opts.filmstrip
             && t >= next_frame
         {

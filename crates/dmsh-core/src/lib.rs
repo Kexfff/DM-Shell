@@ -6,9 +6,11 @@ pub mod anim;
 pub mod ipc;
 mod layout;
 
-pub use activity::{Activities, ActivitySpec, ActivityView, Placement, Priority, View};
+pub use activity::{
+    Action, Activities, ActivitySpec, ActivityView, DEFAULT_ACTION, Placement, Priority, View,
+};
 pub use anim::{IslandKind, Stage};
 pub use layout::{
-    Align, Color, Content, Draw, Group, IconDraw, Measure, Rect, RoundRect, Scene, TextDraw,
-    TextStyle, Theme, Weight, center_content, right_content,
+    Align, Color, Content, Draw, Group, Hit, IconDraw, Measure, Rect, RoundRect, Scene, Target,
+    TextDraw, TextStyle, Theme, Weight, center_content, right_content,
 };

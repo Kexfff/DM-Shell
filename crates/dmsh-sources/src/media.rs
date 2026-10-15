@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use dmsh_core::{ActivitySpec, Placement, Priority};
+use dmsh_core::{Action, ActivitySpec, Placement, Priority};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -13,7 +13,7 @@ use zbus::{Connection, fdo::DBusProxy, zvariant::OwnedValue};
 
 use crate::Emitter;
 
-const ID: &str = "media";
+pub const ID: &str = "media";
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 /// playerctld mirrors the active player; showing it too would duplicate it.
 const IGNORED: &[&str] = &["org.mpris.MediaPlayer2.playerctld"];
@@ -29,6 +29,9 @@ trait Player {
     fn playback_status(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn metadata(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn previous(&self) -> zbus::Result<()>;
+    fn play_pause(&self) -> zbus::Result<()>;
+    fn next(&self) -> zbus::Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +54,8 @@ struct Player {
     status_since: Instant,
 }
 
-pub async fn run(emitter: Emitter) -> Result<()> {
+/// `commands` carries action keys from the media activity's buttons.
+pub async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<String>) -> Result<()> {
     let conn = Connection::session().await?;
     let dbus = DBusProxy::new(&conn).await?;
     let mut owner_changes = dbus.receive_name_owner_changed().await?;
@@ -82,6 +86,12 @@ pub async fn run(emitter: Emitter) -> Result<()> {
                 if args.new_owner().is_some() {
                     watchers.insert(name.clone(), watch(conn.clone(), name, tx.clone()));
                 }
+            }
+            Some(key) = commands.recv() => {
+                if let Some(name) = active(&players) {
+                    control(&conn, name, &key).await;
+                }
+                continue;
             }
             Some((name, track)) = updates.recv() => {
                 // Ignore late updates from a watcher that was already stopped.
@@ -167,15 +177,49 @@ async fn follow(
     }
 }
 
-fn describe(players: &HashMap<String, Player>) -> Option<ActivitySpec> {
+/// Sends a media button press to a player.
+async fn control(conn: &Connection, name: &str, key: &str) {
+    let result = async {
+        let proxy = PlayerProxy::builder(conn)
+            .destination(name.to_owned())?
+            .build()
+            .await?;
+        match key {
+            "previous" => proxy.previous().await,
+            "play-pause" => proxy.play_pause().await,
+            "next" => proxy.next().await,
+            _ => Ok(()),
+        }
+    }
+    .await;
+    if let Err(e) = result {
+        log::warn!("media control `{key}` on {name}: {e}");
+    }
+}
+
+/// The player shown: the most recently started one that is playing, else the most
+/// recently paused one.
+fn active(players: &HashMap<String, Player>) -> Option<&String> {
     let newest = |status: Status| {
         players
             .iter()
             .filter(|(_, p)| p.track.status == status)
             .max_by_key(|(_, p)| p.status_since)
+            .map(|(name, _)| name)
     };
-    let (name, player) = newest(Status::Playing).or_else(|| newest(Status::Paused))?;
-    let track = &player.track;
+    newest(Status::Playing).or_else(|| newest(Status::Paused))
+}
+
+fn control_action(key: &str, icon: &str) -> Action {
+    Action {
+        icon: Some(icon.into()),
+        ..Action::new(key, "")
+    }
+}
+
+fn describe(players: &HashMap<String, Player>) -> Option<ActivitySpec> {
+    let name = active(players)?;
+    let track = &players[name].track;
 
     let app = name
         .strip_prefix(PREFIX)
@@ -191,6 +235,19 @@ fn describe(players: &HashMap<String, Player>) -> Option<ActivitySpec> {
     Some(ActivitySpec {
         body: Some(app.to_owned()),
         icon: Some("music".into()),
+        actions: vec![
+            control_action("previous", "skip-back"),
+            control_action(
+                "play-pause",
+                if track.status == Status::Playing {
+                    "pause"
+                } else {
+                    "play"
+                },
+            ),
+            control_action("next", "skip-forward"),
+        ],
+        keep_on_action: true,
         placement: Placement::Center,
         priority: Priority::Low,
         ttl_ms: (track.status == Status::Paused).then_some(PAUSED_TTL.as_millis() as u64),

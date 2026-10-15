@@ -14,7 +14,8 @@ use std::f32::consts::TAU;
 
 use crate::activity::View;
 use crate::layout::{
-    Content, Draw, Group, Measure, Rect, RoundRect, Scene, Theme, center_content, right_content,
+    Content, Draw, Group, Hit, Measure, Rect, RoundRect, Scene, Target, Theme, center_content,
+    right_content,
 };
 
 /// Spring constants derived from a response time (seconds per oscillation) and a damping
@@ -217,6 +218,8 @@ pub struct Stage {
     width: f32,
     /// Id of the activity the center showed after the last update.
     center_id: Option<String>,
+    /// Pointer position in surface coordinates, for hover highlights.
+    pointer: Option<(f32, f32)>,
 }
 
 impl Stage {
@@ -358,16 +361,67 @@ impl Stage {
         ((bottom + theme.pill_top).ceil() as u32).max(theme.strip_height)
     }
 
+    /// Updates the pointer position; returns whether the highlighted target changed.
+    pub fn set_pointer(&mut self, pointer: Option<(f32, f32)>) -> bool {
+        let before = self.hovered_hit().map(|(_, h)| h.rect);
+        self.pointer = pointer;
+        before != self.hovered_hit().map(|(_, h)| h.rect)
+    }
+
+    /// What clicking at `(x, y)` would do.
+    pub fn target_at(&self, x: f32, y: f32) -> Option<Target> {
+        self.hit_at(x, y).map(|(_, hit)| hit.target)
+    }
+
+    fn hovered_hit(&self) -> Option<(usize, Hit)> {
+        let (x, y) = self.pointer?;
+        self.hit_at(x, y).filter(|(_, h)| h.highlight)
+    }
+
+    /// The hit under `(x, y)` in surface coordinates, with the index of its island
+    /// (0 = right, 1 = center). Content that is still mostly faded out isn't clickable.
+    fn hit_at(&self, x: f32, y: f32) -> Option<(usize, Hit)> {
+        self.islands().enumerate().find_map(|(i, island)| {
+            let rect = island.rect.current();
+            let content = island
+                .content
+                .as_ref()
+                .filter(|_| island.alpha.value > 0.5)?;
+            if !rect.contains(x, y) {
+                return None;
+            }
+            let (dx, dy) = content_offset(rect, content);
+            content.hits.iter().find_map(|hit| {
+                let r = hit.rect.translate(dx, dy);
+                r.contains(x, y).then(|| {
+                    (
+                        i,
+                        Hit {
+                            rect: r,
+                            ..hit.clone()
+                        },
+                    )
+                })
+            })
+        })
+    }
+
     pub fn scene(&self, theme: &Theme) -> Scene {
         let mut scene = Scene::default();
-        for island in self.islands() {
+        let hovered = self.hovered_hit();
+        for (i, island) in self.islands().enumerate() {
             let rect = island.rect.current();
+            let highlight = hovered
+                .as_ref()
+                .filter(|(h, _)| *h == i)
+                .map(|(_, hit)| hit.rect);
             push_island(
                 &mut scene,
                 theme,
                 rect,
                 island.content.as_ref(),
                 island.alpha.value,
+                highlight,
             );
             if rect.w >= 1.0 && rect.h >= 1.0 {
                 scene.islands.push(rect);
@@ -380,6 +434,7 @@ impl Stage {
                 g.rect.current(),
                 Some(&g.content),
                 g.alpha.value,
+                None,
             );
         }
         scene
@@ -397,12 +452,21 @@ fn hidden_right(width: f32, theme: &Theme) -> Rect {
     )
 }
 
+/// Where content's origin goes: centered in the pill, which may be mid-morph.
+fn content_offset(rect: Rect, content: &Content) -> (f32, f32) {
+    (
+        rect.x + (rect.w - content.w) / 2.0,
+        rect.y + (rect.h - content.h) / 2.0,
+    )
+}
+
 fn push_island(
     scene: &mut Scene,
     theme: &Theme,
     rect: Rect,
     content: Option<&Content>,
     alpha: f32,
+    highlight: Option<Rect>,
 ) {
     if rect.w < 0.5 || rect.h < 0.5 {
         return;
@@ -422,10 +486,22 @@ fn push_island(
         return;
     };
     // Content stays centered in the pill while it morphs; the clip hides any overflow.
-    let dx = rect.x + (rect.w - content.w) / 2.0;
-    let dy = rect.y + (rect.h - content.h) / 2.0;
-    let mut items = content.items.clone();
-    items.iter_mut().for_each(|d| d.translate(dx, dy));
+    let (dx, dy) = content_offset(rect, content);
+    let mut items: Vec<Draw> = highlight
+        .map(|r| {
+            Draw::Rect(RoundRect {
+                rect: r,
+                radius: 10.0,
+                color: theme.highlight,
+            })
+        })
+        .into_iter()
+        .collect();
+    items.extend(content.items.iter().map(|d| {
+        let mut d = d.clone();
+        d.translate(dx, dy);
+        d
+    }));
     scene.groups.push(Group {
         clip: Some(rect),
         alpha,
@@ -555,6 +631,43 @@ mod tests {
         let scene = stage.scene(&Theme::default());
         assert_eq!(scene.islands.len(), 1, "only the center remains");
         assert!(stage.right.as_ref().unwrap().content.is_none());
+    }
+
+    #[test]
+    fn clicks_and_highlights_follow_the_animated_content() {
+        use crate::activity::{Action, ActivityView};
+        let theme = Theme::default();
+        let mut stage = Stage::default();
+        let a = ActivityView {
+            actions: vec![Action::new("allow", "Allow"), Action::new("deny", "Deny")],
+            ..activity("perm", None)
+        };
+        let v = view(Some(a), &[]);
+        update(&mut stage, &v, Some(IslandKind::Center));
+        // Snapped (first update), so the expanded content is in place.
+        let content = center_content(&v, true, &theme, &mut FakeMeasure);
+        let rect = stage.center.as_ref().unwrap().rect.current();
+        let (dx, dy) = content_offset(rect, &content);
+        let allow = content.hits[0].rect.translate(dx, dy);
+        let (x, y) = (allow.x + 2.0, allow.y + 2.0);
+
+        let target = stage.target_at(x, y);
+        let expected = Target::Invoke {
+            id: "perm".into(),
+            key: "allow".into(),
+        };
+        assert_eq!(target, Some(expected));
+        assert!(stage.set_pointer(Some((x, y))), "highlight appears");
+        assert!(!stage.set_pointer(Some((x + 1.0, y))), "same button");
+        let highlights = stage
+            .scene(&theme)
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .filter(|d| matches!(d, Draw::Rect(r) if r.color == theme.highlight))
+            .count();
+        assert_eq!(highlights, 1);
+        assert_eq!(stage.target_at(5.0, 5.0), None);
     }
 
     #[test]

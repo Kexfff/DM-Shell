@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use dmsh_core::ipc::{Request, Response, socket_path};
+use dmsh_core::ipc::{Event, Reply, Request, Response, socket_path};
 use smithay_client_toolkit::reexports::calloop::{
     Interest, LoopHandle, Mode, PostAction,
     generic::{Generic, NoIoDrop},
@@ -119,6 +119,13 @@ fn respond(stream: &NoIoDrop<UnixStream>, shell: &mut Shell, line: &[u8]) -> boo
         return true;
     }
     let response = match serde_json::from_slice::<Request>(line) {
+        Ok(Request::Subscribe) => match stream.try_clone() {
+            Ok(clone) => {
+                shell.add_subscriber(clone);
+                shell.handle(Request::Subscribe)
+            }
+            Err(e) => Response::Error(format!("subscribing: {e}")),
+        },
         Ok(request) => shell.handle(request),
         Err(e) => Response::Error(format!("invalid request: {e}")),
     };
@@ -159,4 +166,26 @@ pub fn request_raw(line: &str) -> Result<String> {
         bail!("shell closed the connection without replying");
     }
     Ok(reply.trim_end().to_owned())
+}
+
+/// Subscribes to the event stream; yields events until the shell goes away.
+pub fn subscribe() -> Result<impl Iterator<Item = Result<Event>>> {
+    let path = socket_path().context("XDG_RUNTIME_DIR is not set")?;
+    let mut stream = UnixStream::connect(&path)
+        .with_context(|| format!("connecting to {} (is dmsh running?)", path.display()))?;
+    let mut line = serde_json::to_string(&Request::Subscribe)?;
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+
+    let mut reader = BufReader::new(stream);
+    let mut reply = String::new();
+    reader.read_line(&mut reply)?;
+    match serde_json::from_str(&reply).context("parsing response")? {
+        Response::Ok(Reply::Subscribed) => {}
+        Response::Error(e) => bail!("{e}"),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+    Ok(reader
+        .lines()
+        .map(|line| serde_json::from_str(&line?).context("parsing event")))
 }

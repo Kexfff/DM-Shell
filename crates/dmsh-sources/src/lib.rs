@@ -19,6 +19,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use dmsh_core::ipc::Removal;
 use dmsh_core::{ActivitySpec, Placement, ipc::Request};
 use tokio::sync::mpsc;
 
@@ -41,12 +42,8 @@ pub enum Event {
 pub enum Command {
     /// An activity left the shell without its source asking for it.
     Removed { id: String, reason: Removal },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Removal {
-    Expired,
-    Dismissed,
+    /// One of the activity's actions was invoked (clicked, or via IPC).
+    Invoked { id: String, key: String },
 }
 
 /// Lets the shell send [`Command`]s to the sources thread.
@@ -79,25 +76,34 @@ pub fn spawn(emit: impl Fn(Event) + Send + Sync + 'static) -> std::io::Result<Ha
 }
 
 async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
-    let (removed_tx, removed_rx) = mpsc::unbounded_channel();
+    let (notifications_tx, notifications_rx) = mpsc::unbounded_channel();
+    let (media_tx, media_rx) = mpsc::unbounded_channel();
 
     tokio::spawn(supervise("clock", clock::run(emitter.clone())));
     tokio::spawn(supervise("niri", niri::run(emitter.clone())));
     tokio::spawn(supervise("volume", volume::run(emitter.clone())));
     tokio::spawn(supervise("brightness", brightness::run(emitter.clone())));
-    tokio::spawn(supervise("media", media::run(emitter.clone())));
+    tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));
     tokio::spawn(supervise("power", power::run(emitter.clone())));
     tokio::spawn(supervise("network", network::run(emitter.clone())));
     tokio::spawn(supervise(
         "notifications",
-        notifications::run(emitter, removed_rx),
+        notifications::run(emitter, notifications_rx),
     ));
 
+    // Route each command to the source that owns the activity.
     while let Some(command) = commands.recv().await {
         match command {
             Command::Removed { id, reason } => {
                 if let Some(n) = notifications::parse_id(&id) {
-                    let _ = removed_tx.send((n, reason));
+                    let _ = notifications_tx.send(notifications::Command::Removed(n, reason));
+                }
+            }
+            Command::Invoked { id, key } => {
+                if let Some(n) = notifications::parse_id(&id) {
+                    let _ = notifications_tx.send(notifications::Command::Invoked(n, key));
+                } else if id == media::ID {
+                    let _ = media_tx.send(key);
                 }
             }
         }
