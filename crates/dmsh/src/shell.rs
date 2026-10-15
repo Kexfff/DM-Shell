@@ -4,12 +4,13 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use dmsh_core::{
-    Activities, Layout, Theme, View,
+    Activities, IslandKind, Stage, Theme, View,
     ipc::{Reply, Request, Response, StateDump},
 };
+use dmsh_render::Renderer;
 use dmsh_sources::{Command as SourceCommand, Event as SourceEvent, Removal};
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, Region},
+    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     delegate_registry,
     dispatch2::Dispatch2,
     output::{OutputHandler, OutputState},
@@ -22,11 +23,17 @@ use smithay_client_toolkit::{
         client::{
             Connection, Proxy, QueueHandle,
             globals::registry_queue_init,
-            protocol::{wl_output, wl_shm, wl_surface},
+            protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
         },
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    seat::{
+        Capability, SeatHandler, SeatState,
+        pointer::{
+            PointerEvent, PointerEventKind, PointerHandler, cursor_shape::CursorShapeManager,
+        },
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -37,6 +44,7 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use wayland_protocols::wp::{
+    cursor_shape::v1::client::wp_cursor_shape_device_v1::{self, Shape},
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
     viewporter::client::{wp_viewport, wp_viewporter},
 };
@@ -63,7 +71,14 @@ pub fn run() -> Result<()> {
     let mut event_loop: EventLoop<Shell> = EventLoop::try_new()?;
     let _socket = crate::ipc::listen(&event_loop.handle())?;
 
+    let cursor_shape = CursorShapeManager::bind(&globals, &qh).ok();
     let mut shell = Shell {
+        seat_state: SeatState::new(&globals, &qh),
+        pointer: None,
+        cursor_shape,
+        cursor_device: None,
+        renderer: Renderer::new(),
+        qh: qh.clone(),
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
         compositor,
@@ -76,6 +91,7 @@ pub fn run() -> Result<()> {
         views: Views::default(),
         focused_output: None,
         clock: None,
+        date: None,
         loop_handle: event_loop.handle(),
         timer: None,
         sources: None,
@@ -107,6 +123,13 @@ pub fn run() -> Result<()> {
 
 pub struct Shell {
     registry_state: RegistryState,
+    seat_state: SeatState,
+    pointer: Option<wl_pointer::WlPointer>,
+    cursor_shape: Option<CursorShapeManager>,
+    cursor_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
+    /// Fonts and glyph caches, shared by every output; also measures text for layout.
+    renderer: Renderer,
+    qh: QueueHandle<Shell>,
     output_state: OutputState,
     compositor: CompositorState,
     layer_shell: LayerShell,
@@ -124,6 +147,7 @@ pub struct Shell {
     /// focused.
     focused_output: Option<String>,
     clock: Option<String>,
+    date: Option<String>,
     loop_handle: LoopHandle<'static, Shell>,
     /// Fires at the arbiter's next deadline (expiry or center→right move).
     timer: Option<RegistrationToken>,
@@ -155,6 +179,13 @@ struct OutputSurface {
     scale: u32,
     /// Per output, so a collapse on one output can return memory without affecting others.
     pool: SlotPool,
+    /// Animated island state on this output.
+    stage: Stage,
+    hover: Option<IslandKind>,
+    /// A frame callback is outstanding; the next draw happens when it fires.
+    frame_pending: bool,
+    /// Timestamp of the last animation frame, for frame-rate independent springs.
+    last_frame_ms: Option<u32>,
 }
 
 impl Drop for OutputSurface {
@@ -210,6 +241,7 @@ impl Shell {
         }
         let view_for = |focused| View {
             clock: self.clock.clone(),
+            date: self.date.clone(),
             ..self.activities.view_for(now, focused)
         };
         let views = Views {
@@ -218,7 +250,7 @@ impl Shell {
         };
         if views != self.views {
             self.views = views;
-            self.redraw_all();
+            self.update_all();
         }
 
         if let Some(token) = self.timer.take() {
@@ -248,11 +280,12 @@ impl Shell {
             SourceEvent::FocusedOutput(output) => {
                 if output != self.focused_output {
                     self.focused_output = output;
-                    self.redraw_all();
+                    self.update_all();
                 }
             }
-            SourceEvent::Clock(clock) => {
-                self.clock = Some(clock);
+            SourceEvent::Clock { time, date } => {
+                self.clock = Some(time);
+                self.date = Some(date);
                 self.refresh();
             }
         }
@@ -265,9 +298,65 @@ impl Shell {
         }
     }
 
-    fn redraw_all(&mut self) {
+    fn update_all(&mut self) {
         for i in 0..self.islands.len() {
-            self.draw(i);
+            self.update_stage(i);
+        }
+    }
+
+    /// Points an output's islands at its current view and hover state, then draws (or lets
+    /// the running animation pick it up on its next frame).
+    fn update_stage(&mut self, index: usize) {
+        let name = self
+            .output_state
+            .info(&self.islands[index].output)
+            .and_then(|info| info.name);
+        let focused = match (&self.focused_output, &name) {
+            (Some(focused), Some(name)) => focused == name,
+            _ => true,
+        };
+        let view = if focused {
+            &self.views.focused
+        } else {
+            &self.views.other
+        };
+        let island = &mut self.islands[index];
+        let Some((width, _)) = island.size else {
+            return;
+        };
+        island.stage.update(
+            width as f32,
+            view,
+            island.hover,
+            &self.theme,
+            &mut self.renderer,
+        );
+        if !island.frame_pending {
+            self.draw(index);
+        }
+    }
+
+    /// Advances an output's animation by the time since its last frame and draws it.
+    fn on_frame(&mut self, index: usize, time_ms: u32) {
+        let island = &mut self.islands[index];
+        island.frame_pending = false;
+        let dt = island.last_frame_ms.map_or(1.0 / 120.0, |last| {
+            time_ms.wrapping_sub(last) as f32 / 1000.0
+        });
+        // A long gap (output asleep, compositor busy) shouldn't fling the springs.
+        island.stage.step(dt.clamp(0.0, 1.0 / 20.0));
+        island.last_frame_ms = Some(time_ms);
+        self.draw(index);
+        let island = &mut self.islands[index];
+        if !island.stage.animating() {
+            island.last_frame_ms = None;
+        }
+    }
+
+    fn set_hover(&mut self, index: usize, hover: Option<IslandKind>) {
+        if self.islands[index].hover != hover {
+            self.islands[index].hover = hover;
+            self.update_stage(index);
         }
     }
 
@@ -319,6 +408,10 @@ impl Shell {
             resize_pending: false,
             scale,
             pool,
+            stage: Stage::default(),
+            hover: None,
+            frame_pending: false,
+            last_frame_ms: None,
         });
     }
 
@@ -329,19 +422,6 @@ impl Shell {
     }
 
     fn draw(&mut self, index: usize) {
-        let name = self
-            .output_state
-            .info(&self.islands[index].output)
-            .and_then(|info| info.name);
-        let focused = match (&self.focused_output, &name) {
-            (Some(focused), Some(name)) => focused == name,
-            _ => true,
-        };
-        let view = if focused {
-            &self.views.focused
-        } else {
-            &self.views.other
-        };
         let island = &mut self.islands[index];
         let Some((width, height)) = island.size else {
             return;
@@ -350,12 +430,11 @@ impl Shell {
             return; // The configure for the new size will redraw.
         }
 
-        let layout = Layout::compute(width as f32, &self.theme, view);
-        let scene = layout.scene(&self.theme, view);
-
         // The canvas is only as tall as its content: the strip while collapsed, taller
-        // while something floats over windows. The reserved strip never changes.
-        let needed = scene.canvas_height(&self.theme);
+        // while something floats over windows. The reserved strip never changes. It is
+        // sized for both the current and target state, so it grows before an expansion
+        // animates and shrinks after a collapse finishes.
+        let needed = island.stage.canvas_height(&self.theme);
         if needed != island.requested_height {
             island.layer.set_size(0, needed);
             island.layer.commit();
@@ -393,7 +472,11 @@ impl Shell {
         };
         // Pixels per logical unit, after buffer rounding.
         let px_scale = bw as f32 / width as f32;
-        if !dmsh_render::render_argb8888(&scene, px_scale, canvas, bw, bh) {
+        let scene = island.stage.scene(&self.theme);
+        if !self
+            .renderer
+            .render_argb8888(&scene, px_scale, canvas, bw, bh)
+        {
             log::error!("invalid buffer size {bw}x{bh}");
             return;
         }
@@ -414,6 +497,10 @@ impl Shell {
             None => surface.set_buffer_scale((island.scale / SCALE_DENOM) as i32),
         }
         surface.damage_buffer(0, 0, bw as i32, bh as i32);
+        if island.stage.animating() {
+            surface.frame(&self.qh, FrameCallbackData(surface.clone()));
+            island.frame_pending = true;
+        }
         if let Err(e) = buffer.attach_to(surface) {
             log::error!("attaching buffer: {e}");
             return;
@@ -455,7 +542,17 @@ impl CompositorHandler for Shell {
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    fn frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        time: u32,
+    ) {
+        if let Some(index) = self.island_mut(surface) {
+            self.on_frame(index, time);
+        }
+    }
 
     fn surface_enter(
         &mut self,
@@ -518,7 +615,7 @@ impl LayerShellHandler for Shell {
         let size = (w.max(1), if h == 0 { island.requested_height } else { h });
         island.size = Some(size);
         island.resize_pending = false;
-        self.draw(index);
+        self.update_stage(index);
     }
 }
 
@@ -532,7 +629,85 @@ impl ProvidesRegistryState for Shell {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
+}
+
+impl SeatHandler for Shell {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability != Capability::Pointer || self.pointer.is_some() {
+            return;
+        }
+        match self.seat_state.get_pointer(qh, &seat) {
+            Ok(pointer) => {
+                self.cursor_device = self
+                    .cursor_shape
+                    .as_ref()
+                    .map(|m| m.get_shape_device(&pointer, qh));
+                self.pointer = Some(pointer);
+            }
+            Err(e) => log::warn!("no pointer: {e}"),
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer {
+            if let Some(device) = self.cursor_device.take() {
+                device.destroy();
+            }
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for Shell {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            let Some(index) = self.island_mut(&event.surface) else {
+                continue;
+            };
+            let (x, y) = (event.position.0 as f32, event.position.1 as f32);
+            let hover = match event.kind {
+                PointerEventKind::Enter { serial } => {
+                    if let Some(device) = &self.cursor_device {
+                        device.set_shape(serial, Shape::Default);
+                    }
+                    self.islands[index].stage.hit(x, y)
+                }
+                PointerEventKind::Motion { .. } => self.islands[index].stage.hit(x, y),
+                PointerEventKind::Leave { .. } => None,
+                _ => continue,
+            };
+            self.set_hover(index, hover);
+        }
+    }
 }
 
 delegate_registry!(Shell);

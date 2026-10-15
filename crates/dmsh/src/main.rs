@@ -1,12 +1,13 @@
+mod headless;
 mod ipc;
 mod shell;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use dmsh_core::{
-    Activities, ActivitySpec, Layout, Placement, Priority, Theme,
+    ActivitySpec, IslandKind, Placement, Priority,
     ipc::{Reply, Request, Response},
 };
 
@@ -37,7 +38,9 @@ enum Command {
     },
     /// Print the JSON Schema of the IPC protocol.
     Schema,
-    /// Draw the islands headlessly to a PNG, optionally with activities.
+    /// List the built-in icon names.
+    Icons,
+    /// Draw the islands headlessly to a PNG, simulating animations on a fake clock.
     Render {
         #[arg(short, long, default_value = "dmsh.png")]
         output: String,
@@ -46,12 +49,32 @@ enum Command {
         width: f32,
         #[arg(long, default_value_t = 1.75)]
         scale: f32,
-        /// JSON file with an array of activity specs (as sent by `push`).
+        /// JSON file with an array of activity specs (as sent by `push`); an `at_ms` field
+        /// delays an entry.
         #[arg(long)]
         activities: Option<String>,
-        /// Render the state this long after the activities were pushed, e.g. 2500ms.
-        #[arg(long, value_parser = parse_duration, default_value = "0ms")]
+        /// Render this long into the simulation, e.g. 2500ms.
+        #[arg(long, value_parser = parse_duration, default_value = "3s")]
         at: Duration,
+        /// Hover an island (center or right).
+        #[arg(long, value_parser = parse_hover)]
+        hover: Option<IslandKind>,
+        /// When the hover starts.
+        #[arg(long, value_parser = parse_duration, default_value = "0ms")]
+        hover_at: Duration,
+        /// Render a frame every interval up to --at, stacked vertically.
+        #[arg(long, value_parser = parse_duration)]
+        filmstrip: Option<Duration>,
+        #[arg(long, default_value = "13:35")]
+        clock: String,
+        #[arg(long, default_value = "Thursday, 15 October")]
+        date: String,
+        /// Background color behind the islands, e.g. #3c3c40 (default: transparent).
+        #[arg(long)]
+        background: Option<String>,
+        /// Keep only a logical x range: <x>,<width>.
+        #[arg(long, value_parser = parse_crop)]
+        crop: Option<(f32, f32)>,
     },
 }
 
@@ -68,6 +91,9 @@ enum ActivityCommand {
         /// 0.0 to 1.0.
         #[arg(long)]
         progress: Option<f32>,
+        /// Built-in icon name (see `dmsh icons`).
+        #[arg(long)]
+        icon: Option<String>,
         /// center, right, or flow (center briefly, then right).
         #[arg(long, value_parser = parse_enum::<Placement>, default_value = "flow")]
         placement: Placement,
@@ -112,13 +138,37 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&schema)?);
             Ok(())
         }
+        Command::Icons => {
+            dmsh_render::icon_names().for_each(|name| println!("{name}"));
+            Ok(())
+        }
         Command::Render {
             output,
             width,
             scale,
             activities,
             at,
-        } => render(&output, width, scale, activities.as_deref(), at),
+            hover,
+            hover_at,
+            filmstrip,
+            clock,
+            date,
+            background,
+            crop,
+        } => headless::render(headless::Options {
+            output,
+            width,
+            scale,
+            activities,
+            at,
+            hover,
+            hover_at,
+            filmstrip,
+            clock,
+            date,
+            background,
+            crop,
+        }),
     }
 }
 
@@ -129,6 +179,7 @@ fn activity(cmd: ActivityCommand) -> Result<()> {
             title,
             body,
             progress,
+            icon,
             placement,
             priority,
             ttl,
@@ -136,6 +187,7 @@ fn activity(cmd: ActivityCommand) -> Result<()> {
         } => Request::Push(ActivitySpec {
             body,
             progress,
+            icon,
             placement,
             priority,
             ttl_ms: ttl.map(|d| d.as_millis() as u64),
@@ -159,37 +211,6 @@ fn call(request: &Request) -> Result<Reply> {
     }
 }
 
-fn render(
-    output: &str,
-    width: f32,
-    scale: f32,
-    activities: Option<&str>,
-    at: Duration,
-) -> Result<()> {
-    let t0 = Instant::now();
-    let mut state = Activities::default();
-    if let Some(path) = activities {
-        let json = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-        let specs: Vec<ActivitySpec> = serde_json::from_str(&json).context("parsing activities")?;
-        for spec in specs {
-            state.push(spec, t0).map_err(anyhow::Error::msg)?;
-        }
-    }
-    let view = state.view(t0 + at);
-
-    let theme = Theme::default();
-    let scene = Layout::compute(width, &theme, &view).scene(&theme, &view);
-    let bw = (width * scale).round() as u32;
-    let bh = (scene.canvas_height(&theme) as f32 * scale).round() as u32;
-    let mut pixmap = dmsh_render::tiny_skia::Pixmap::new(bw, bh).context("invalid size")?;
-    dmsh_render::render(&scene, scale, &mut pixmap.as_mut());
-    pixmap
-        .save_png(output)
-        .with_context(|| format!("writing {output}"))?;
-    println!("{output}: {bw}x{bh}");
-    Ok(())
-}
-
 /// Parses `1500ms`, `2s` or `5m`.
 fn parse_duration(s: &str) -> Result<Duration, String> {
     let split = s
@@ -207,6 +228,21 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         _ => return Err(format!("unknown unit `{unit}` (use ms, s or m)")),
     };
     Duration::try_from_secs_f64(secs).map_err(|e| e.to_string())
+}
+
+fn parse_hover(s: &str) -> Result<IslandKind, String> {
+    match s {
+        "center" => Ok(IslandKind::Center),
+        "right" => Ok(IslandKind::Right),
+        _ => Err("expected center or right".into()),
+    }
+}
+
+/// Parses `<x>,<width>`.
+fn parse_crop(s: &str) -> Result<(f32, f32), String> {
+    let (x, w) = s.split_once(',').ok_or("expected <x>,<width>")?;
+    let parse = |v: &str| v.trim().parse::<f32>().map_err(|e| e.to_string());
+    Ok((parse(x)?, parse(w)?))
 }
 
 /// Parses an enum by its JSON name, so the CLI and the protocol accept the same values.

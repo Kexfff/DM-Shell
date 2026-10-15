@@ -28,8 +28,12 @@ pub enum Event {
     Request(Request),
     /// Connector name of the focused output, e.g. `eDP-1`.
     FocusedOutput(Option<String>),
-    /// Idle clock text, e.g. `13:08`; sent at every minute boundary.
-    Clock(String),
+    /// Idle clock text, e.g. `13:08` and `Thursday, 15 October`; sent at every minute
+    /// boundary.
+    Clock {
+        time: String,
+        date: String,
+    },
 }
 
 /// What the shell tells sources.
@@ -126,9 +130,10 @@ impl Emitter {
 }
 
 /// A short center overlay (volume, brightness, keyboard layout).
-fn osd(id: &str, title: impl Into<String>, progress: Option<f32>) -> ActivitySpec {
+fn osd(id: &str, icon: &str, title: impl Into<String>, progress: Option<f32>) -> ActivitySpec {
     ActivitySpec {
         progress,
+        icon: Some(icon.into()),
         placement: Placement::Center,
         ttl_ms: Some(1500),
         ..ActivitySpec::new(id, title)
@@ -136,8 +141,9 @@ fn osd(id: &str, title: impl Into<String>, progress: Option<f32>) -> ActivitySpe
 }
 
 /// A short right-island status message (Wi-Fi, charger).
-fn status(id: &str, title: impl Into<String>) -> ActivitySpec {
+fn status(id: &str, icon: &str, title: impl Into<String>) -> ActivitySpec {
     ActivitySpec {
+        icon: Some(icon.into()),
         placement: Placement::Right,
         priority: dmsh_core::Priority::Low,
         ttl_ms: Some(4000),

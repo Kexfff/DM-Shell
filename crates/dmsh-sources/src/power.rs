@@ -70,9 +70,14 @@ pub async fn run(emitter: Emitter) -> Result<()> {
         let new_state = State::from(device.state().await?);
         if new_state != state {
             if let Some(title) = charger_message(state, new_state) {
+                let icon = if new_state == State::Discharging {
+                    "battery"
+                } else {
+                    "battery-charging"
+                };
                 emitter.push(ActivitySpec {
                     progress: Some((percent / 100.0) as f32),
-                    ..status(CHARGER_ID, title)
+                    ..status(CHARGER_ID, icon, title)
                 });
             }
             state = new_state;
@@ -121,6 +126,7 @@ fn low_battery(level: Level, percent: f64) -> Option<ActivitySpec> {
     };
     Some(ActivitySpec {
         progress: Some((percent / 100.0) as f32),
+        icon: Some("battery-low".into()),
         placement,
         priority,
         ..ActivitySpec::new(LOW_ID, title)

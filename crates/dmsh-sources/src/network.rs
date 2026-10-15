@@ -56,7 +56,7 @@ pub async fn run(emitter: Emitter) -> Result<()> {
         let now = primary(&conn, &nm).await;
         if now != last {
             if let Some(title) = message(last.as_ref(), now.as_ref()) {
-                emitter.push(status(ID, title));
+                emitter.push(status(ID, icon(now.as_ref()), title));
             }
             last = now;
         }
@@ -78,6 +78,14 @@ async fn primary(conn: &Connection, nm: &NetworkManagerProxy<'_>) -> Option<Prim
         name: active.id().await.ok()?,
         kind: active.connection_type().await.ok()?,
     })
+}
+
+fn icon(primary: Option<&Primary>) -> &'static str {
+    match primary {
+        Some(p) if p.kind == "802-11-wireless" => "wifi",
+        Some(_) => "globe",
+        None => "wifi-off",
+    }
 }
 
 fn message(old: Option<&Primary>, new: Option<&Primary>) -> Option<String> {

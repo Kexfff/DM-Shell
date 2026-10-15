@@ -53,6 +53,9 @@ pub struct ActivitySpec {
     /// Progress from 0.0 to 1.0, drawn as a bar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<f32>,
+    /// Built-in icon name, e.g. `bell`, `volume`, `terminal` (see `dmsh icons`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     #[serde(default)]
     pub placement: Placement,
     #[serde(default)]
@@ -76,6 +79,7 @@ impl ActivitySpec {
             title: title.into(),
             body: None,
             progress: None,
+            icon: None,
             placement: Placement::default(),
             priority: Priority::default(),
             ttl_ms: None,
@@ -121,14 +125,26 @@ pub struct ActivityView {
     pub body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub priority: Priority,
 }
 
-/// The right island: the newest item plus how many more are waiting.
+/// Most right-island items carried in a view (the expanded list shows these).
+pub const RIGHT_ITEMS: usize = 6;
+
+/// The right island: the newest items, newest first, and how many there are in total.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RightView {
-    pub newest: ActivityView,
-    pub more: usize,
+    /// Never empty; at most [`RIGHT_ITEMS`].
+    pub items: Vec<ActivityView>,
+    pub total: usize,
+}
+
+impl RightView {
+    pub fn newest(&self) -> &ActivityView {
+        &self.items[0]
+    }
 }
 
 /// Everything both islands show at one moment. `None` means idle (center) or hidden (right).
@@ -139,6 +155,9 @@ pub struct View {
     /// Idle center content, e.g. `13:08`. Filled in by the shell, not the arbiter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<String>,
+    /// Shown when the idle center expands, e.g. `Thursday, 15 October`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// One live activity as reported by `state`.
@@ -192,6 +211,7 @@ impl Entry {
             title: self.spec.title.clone(),
             body: self.spec.body.clone(),
             progress: self.spec.progress,
+            icon: self.spec.icon.clone(),
             priority: self.spec.priority,
         }
     }
@@ -280,15 +300,16 @@ impl Activities {
         right.sort_by_key(|e| {
             std::cmp::Reverse(e.moves_right_at().unwrap_or(e.created).max(e.updated))
         });
-        let right = right.first().map(|newest| RightView {
-            newest: newest.view(),
-            more: right.len() - 1,
+        let right = (!right.is_empty()).then(|| RightView {
+            items: right.iter().take(RIGHT_ITEMS).map(|e| e.view()).collect(),
+            total: right.len(),
         });
 
         View {
             center,
             right,
             clock: None,
+            date: None,
         }
     }
 
@@ -337,7 +358,7 @@ mod tests {
 
         let later = t0 + ms(2000);
         assert_eq!(center_id(&a, later), None);
-        assert_eq!(a.view(later).right.unwrap().newest.id, "n");
+        assert_eq!(a.view(later).right.unwrap().newest().id, "n");
     }
 
     #[test]
@@ -433,7 +454,8 @@ mod tests {
         a.push(spec("wifi", Placement::Right), t0).unwrap();
         a.push(spec("tg", Placement::Right), t0 + ms(10)).unwrap();
         let right = a.view(t0 + ms(10)).right.unwrap();
-        assert_eq!((right.newest.id.as_str(), right.more), ("tg", 1));
+        assert_eq!((right.newest().id.as_str(), right.total), ("tg", 2));
+        assert_eq!(right.items[1].id, "wifi");
     }
 
     #[test]

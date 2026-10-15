@@ -60,8 +60,20 @@ activities. It is pure logic with no I/O, so it is unit-testable without a displ
 - Each output has its own buffer pool; after a collapse, an oversized pool is swapped for
   a small one so the memory is actually returned.
 - **Input region = the pill shapes only**; clicks elsewhere fall through to windows.
-- CPU rasterization with `tiny-skia` into `wl_shm` buffers. Redraw only on frame
-  callbacks while something is animating, and only the damaged region.
+- CPU rasterization with `tiny-skia` into `wl_shm` buffers; text with `cosmic-text`
+  (shaping, wrapping, ellipsis, color emoji). Fonts come from fontconfig: Inter if
+  installed, else the system sans-serif, plus the emoji font — nothing else is loaded.
+  Shaped text is cached, so animation frames only blend cached glyphs.
+- Built-in stroke icons (24×24 path data, `dmsh icons` lists them).
+- **Animation**: island geometry follows springs (response 0.42 s, damping 0.78 — a
+  little overshoot); content cross-fades when an island shows a different thing. A
+  `flow` activity leaving the center *travels* to the right island: the right island
+  flies out of the center if it was hidden, otherwise a ghost pill carries the content
+  over. Frames are driven by `wl_surface.frame` callbacks only while something moves;
+  when everything settles, no callbacks are requested and CPU returns to zero.
+- **Hover** expands an island (pointer enter → expanded content; leave → collapse). The
+  idle center expands to a large clock with the date; an activity shows its body (3
+  lines) and full-width progress; the right island becomes a list of up to 6 items.
 - Fractional scaling via `wp_fractional_scale_v1` + `wp_viewporter` (integer
   `buffer_scale` fallback), so pills are crisp at e.g. 1.75×.
 
@@ -110,7 +122,7 @@ the rest keep running. Nothing polls: every source is event-driven.
    Implemented today:
    ```sh
    dmsh activity push --id build --title "cargo build" --progress 0.4 --placement center
-   dmsh activity push --id perm --title "Claude needs permission" --placement center --priority critical
+   dmsh activity push --id perm --title "Claude needs permission" --placement center --priority critical --icon alert
    dmsh activity dismiss build
    dmsh state                                   # JSON: view + every live activity
    dmsh msg '{"cmd":"push","id":"x","title":"Hi","ttl_ms":3000}'   # raw protocol
@@ -120,8 +132,17 @@ the rest keep running. Nothing polls: every source is event-driven.
    up); a `flow` activity's center phase counts from its first push (updating a
    notification doesn't pop it back). Center winner: priority, then transient over
    persistent, then most recently updated. Default placement is `flow`.
-2. **Agents work on the code.** `dmsh render` draws the islands headlessly to PNG so a
-   change can be checked without a display; snapshot tests; `dmsh state --json` dump.
+2. **Agents work on the code.** `dmsh render` simulates activities and animations on a
+   fake clock and draws the islands to PNG, so a change can be checked without a
+   display:
+   ```sh
+   dmsh render --activities fixture.json --at 2500ms            # one frame
+   dmsh render --activities fixture.json --at 3s --filmstrip 200ms --crop 560,1085 \
+               --background '#3c3c40'                              # a frame every 200 ms
+   dmsh render --activities fixture.json --hover center             # expanded state
+   ```
+   Fixture entries are activity specs; an `at_ms` field delays one. The layout and
+   animation code in `dmsh-core` is unit-tested with a fake text measurer.
 
 ## Phases
 
@@ -132,7 +153,7 @@ the rest keep running. Nothing polls: every source is event-driven.
    and one dim dot per extra item on the right. ✓
 2. **Sources**: niri, clock, volume/brightness OSD, MPRIS, notifications, battery, Wi-Fi.
    Transient center activities show only on the focused output. ✓
-3. Text and icons, spring-based morphing, center→right slide, hover expand.
+3. **Text and icons, spring-based morphing, center→right slide, hover expand.** ✓
 4. Expanded views: notification list and actions, media controls, tray.
 5. Config (KDL), niri keybind integration (e.g. `dmsh focus`).
 

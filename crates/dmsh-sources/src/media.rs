@@ -190,6 +190,7 @@ fn describe(players: &HashMap<String, Player>) -> Option<ActivitySpec> {
     };
     Some(ActivitySpec {
         body: Some(app.to_owned()),
+        icon: Some("music".into()),
         placement: Placement::Center,
         priority: Priority::Low,
         ttl_ms: (track.status == Status::Paused).then_some(PAUSED_TTL.as_millis() as u64),

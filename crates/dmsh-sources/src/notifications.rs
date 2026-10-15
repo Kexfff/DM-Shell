@@ -131,6 +131,7 @@ fn spec(
     };
     ActivitySpec {
         body: (!body.is_empty()).then(|| truncate(body)),
+        icon: Some("bell".into()),
         placement: Placement::Flow,
         priority: match urgency {
             Some(0) => Priority::Low,

@@ -27,7 +27,12 @@ pub async fn run(emitter: Emitter) -> Result<()> {
         let now = read_number(&path)?;
         if now != last {
             last = now;
-            emitter.push(osd(ID, "Brightness", Some(now as f32 / max as f32)));
+            emitter.push(osd(
+                ID,
+                "brightness",
+                "Brightness",
+                Some(now as f32 / max as f32),
+            ));
         }
     }
     anyhow::bail!("inotify stream ended")

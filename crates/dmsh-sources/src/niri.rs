@@ -70,7 +70,7 @@ impl State {
             }
             NiriEvent::KeyboardLayoutSwitched { idx } => {
                 if let Some(name) = self.layouts.get(usize::from(idx)) {
-                    emitter.push(osd(LAYOUT_ID, name.clone(), None));
+                    emitter.push(osd(LAYOUT_ID, "keyboard", name.clone(), None));
                 }
             }
             NiriEvent::CastsChanged { casts } => {
@@ -109,6 +109,7 @@ impl State {
             emitter.dismiss(CAST_ID);
         } else {
             emitter.push(ActivitySpec {
+                icon: Some("screen-share".into()),
                 placement: Placement::Right,
                 priority: Priority::High,
                 ..ActivitySpec::new(CAST_ID, "Screen is being shared")

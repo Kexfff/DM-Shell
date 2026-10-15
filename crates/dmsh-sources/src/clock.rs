@@ -9,7 +9,10 @@ use crate::{Emitter, Event};
 pub async fn run(emitter: Emitter) -> anyhow::Result<()> {
     loop {
         let now = Local::now();
-        emitter.emit(Event::Clock(now.format("%H:%M").to_string()));
+        emitter.emit(Event::Clock {
+            time: now.format("%H:%M").to_string(),
+            date: now.format("%A, %-d %B").to_string(),
+        });
 
         let into_minute = Duration::from_secs(now.second().into())
             + Duration::from_nanos((now.nanosecond() % 1_000_000_000).into());

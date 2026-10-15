@@ -47,8 +47,12 @@ pub async fn run(emitter: Emitter) -> Result<()> {
         };
         if now != last {
             last = now;
-            let title = if now.muted { "Muted" } else { "Volume" };
-            emitter.push(osd(ID, title, Some(now.percent as f32 / 100.0)));
+            let (icon, title) = if now.muted {
+                ("volume-mute", "Muted")
+            } else {
+                ("volume", "Volume")
+            };
+            emitter.push(osd(ID, icon, title, Some(now.percent as f32 / 100.0)));
         }
     }
     anyhow::bail!("`pactl subscribe` exited")
