@@ -4,7 +4,9 @@
 //! Text is measured through the [`Measure`] trait so this module stays free of fonts;
 //! the renderer implements it, tests use a fake.
 
-use crate::activity::{Action, ActivityView, DEFAULT_ACTION, Priority, View};
+use crate::activity::{
+    Action, ActivityView, DEFAULT_ACTION, MenuView, Priority, RightView, TrayIconView, View,
+};
 
 /// Axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -214,11 +216,19 @@ pub struct IconDraw {
     pub color: Color,
 }
 
+/// A bitmap or SVG registered with the renderer under `key` (tray icons).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageDraw {
+    pub key: String,
+    pub rect: Rect,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Draw {
     Rect(RoundRect),
     Text(TextDraw),
     Icon(IconDraw),
+    Image(ImageDraw),
 }
 
 impl Draw {
@@ -227,6 +237,7 @@ impl Draw {
             Draw::Rect(r) => &mut r.rect,
             Draw::Text(t) => &mut t.rect,
             Draw::Icon(i) => &mut i.rect,
+            Draw::Image(i) => &mut i.rect,
         };
         *rect = rect.translate(dx, dy);
     }
@@ -252,9 +263,22 @@ pub struct Scene {
 /// What clicking somewhere does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
-    Invoke { id: String, key: String },
-    Dismiss { id: String },
+    Invoke {
+        id: String,
+        key: String,
+    },
+    Dismiss {
+        id: String,
+    },
     ClearRight,
+    /// A tray icon; the shell picks activate / menu by mouse button.
+    Tray {
+        id: String,
+    },
+    MenuItem {
+        id: i32,
+    },
+    MenuBack,
 }
 
 /// A clickable area; the first hit containing the pointer wins.
@@ -299,12 +323,14 @@ pub fn right_content(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> Option<Content> {
-    let right = view.right.as_ref()?;
-    Some(if expanded {
-        right_list(&right.items, right.total, theme, m)
-    } else {
-        right_compact(right.newest(), right.total, theme, m)
-    })
+    if let Some(menu) = &view.menu {
+        return Some(menu_list(menu, theme, m));
+    }
+    match (&view.right, expanded) {
+        (None, _) if view.tray.is_empty() => None,
+        (Some(right), true) => Some(right_list(right, &view.tray, theme, m)),
+        (right, _) => Some(right_compact(right.as_ref(), &view.tray, theme, m)),
+    }
 }
 
 /// Measures `s` and returns a draw at (0, 0) plus its laid-out size.
@@ -488,34 +514,178 @@ fn activity_expanded(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Co
     }
 }
 
-fn right_compact(a: &ActivityView, total: usize, theme: &Theme, m: &mut dyn Measure) -> Content {
+/// The newest item with a `+N` badge, then the tray icons.
+fn right_compact(
+    right: Option<&RightView>,
+    tray: &[TrayIconView],
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> Content {
     let h = theme.pill_height;
-    let icon_size = 14.0;
-    let style = TextStyle::new(12.5, Weight::Medium);
-    let (t, tw, th) = text(m, &a.title, style, theme.text, theme.right_title_max, 1);
-    let title_x = 10.0 + icon_size + 6.0;
-    let mut items = vec![
-        icon(a, theme, 10.0, (h - icon_size) / 2.0, icon_size),
-        place(t, title_x, (h - th) / 2.0),
-    ];
-    let mut w = title_x + tw + PAD;
-    if total > 1 {
-        let style = TextStyle::new(11.0, Weight::Semibold);
-        let badge = format!("+{}", total - 1);
-        let (n, nw, nh) = text(m, &badge, style, theme.text_secondary, 60.0, 1);
-        items.push(place(n, title_x + tw + 7.0, (h - nh) / 2.0));
-        w += 7.0 + nw;
+    let mut items = Vec::new();
+    let mut hits = Vec::new();
+    let mut x = 10.0;
+    if let Some(right) = right {
+        let a = right.newest();
+        let icon_size = 14.0;
+        let style = TextStyle::new(12.5, Weight::Medium);
+        let (t, tw, th) = text(m, &a.title, style, theme.text, theme.right_title_max, 1);
+        let title_x = x + icon_size + 6.0;
+        items.push(icon(a, theme, x, (h - icon_size) / 2.0, icon_size));
+        items.push(place(t, title_x, (h - th) / 2.0));
+        x = title_x + tw;
+        if right.total > 1 {
+            let style = TextStyle::new(11.0, Weight::Semibold);
+            let badge = format!("+{}", right.total - 1);
+            let (n, nw, nh) = text(m, &badge, style, theme.text_secondary, 60.0, 1);
+            items.push(place(n, x + 7.0, (h - nh) / 2.0));
+            x += 7.0 + nw;
+        }
+        x += if tray.is_empty() { PAD } else { 10.0 };
     }
+    let slot = 26.0;
+    for item in tray {
+        let rect = Rect::new(x, (h - slot) / 2.0, slot, slot);
+        items.push(tray_icon(item, theme, rect, 16.0));
+        hits.push(Hit {
+            rect,
+            target: Target::Tray {
+                id: item.id.clone(),
+            },
+            highlight: true,
+        });
+        x += slot;
+    }
+    if !tray.is_empty() {
+        x += 4.0;
+    }
+    let key = match right {
+        Some(r) => format!("r:{}", r.newest().id),
+        None => "r:tray".into(),
+    };
     Content {
-        w,
+        w: x,
         h,
         items,
-        hits: Vec::new(),
-        key: format!("r:{}", a.id),
+        hits,
+        key,
     }
 }
 
-fn right_list(items: &[ActivityView], total: usize, theme: &Theme, m: &mut dyn Measure) -> Content {
+/// A tray icon centered in `slot`, or a dot when the app gave no usable icon.
+fn tray_icon(item: &TrayIconView, theme: &Theme, slot: Rect, size: f32) -> Draw {
+    let rect = Rect::new(
+        slot.x + (slot.w - size) / 2.0,
+        slot.y + (slot.h - size) / 2.0,
+        size,
+        size,
+    );
+    match &item.image {
+        Some(key) => Draw::Image(ImageDraw {
+            key: key.clone(),
+            rect,
+        }),
+        None => {
+            let d = size * 0.35;
+            let dot = Rect::new(rect.x + (size - d) / 2.0, rect.y + (size - d) / 2.0, d, d);
+            Draw::Rect(RoundRect::pill(dot, theme.text_secondary))
+        }
+    }
+}
+
+/// An open tray menu: header, optional back row, entries.
+fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
+    let w = 300.0;
+    let row = 32.0;
+    let label_x = 36.0;
+    let label_w = w - label_x - 34.0;
+    let mut items = Vec::new();
+    let mut hits = Vec::new();
+    let mut y = 6.0;
+    if !menu.title.is_empty() {
+        let style = TextStyle::new(12.0, Weight::Semibold);
+        let (t, _, th) = text(m, &menu.title, style, theme.text_secondary, w - 28.0, 1);
+        items.push(place(t, 14.0, y + (26.0 - th) / 2.0));
+        y += 26.0;
+    }
+    let entry_row =
+        |label: &str, color: Color, y: f32, items: &mut Vec<Draw>, m: &mut dyn Measure| {
+            let style = TextStyle::new(13.0, Weight::Regular);
+            let (t, _, th) = text(m, label, style, color, label_w, 1);
+            items.push(place(t, label_x, y + (row - th) / 2.0));
+        };
+    let small_icon = |name: &str, x: f32, y: f32, color: Color| {
+        Draw::Icon(IconDraw {
+            name: name.into(),
+            rect: Rect::new(x, y + (row - 14.0) / 2.0, 14.0, 14.0),
+            color,
+        })
+    };
+    if menu.nested {
+        items.push(small_icon("chevron-left", 14.0, y, theme.text_secondary));
+        entry_row("Back", theme.text_secondary, y, &mut items, m);
+        hits.push(Hit {
+            rect: Rect::new(6.0, y, w - 12.0, row),
+            target: Target::MenuBack,
+            highlight: true,
+        });
+        y += row;
+    }
+    for entry in &menu.entries {
+        if entry.separator {
+            let line = Rect::new(14.0, y + 4.0, w - 28.0, 1.0);
+            items.push(Draw::Rect(RoundRect {
+                rect: line,
+                radius: 0.0,
+                color: theme.button,
+            }));
+            y += 9.0;
+            continue;
+        }
+        let color = if entry.enabled {
+            theme.text
+        } else {
+            theme.text_secondary
+        };
+        if entry.toggle == Some(true) {
+            items.push(small_icon("check", 14.0, y, color));
+        }
+        entry_row(&entry.label, color, y, &mut items, m);
+        if entry.submenu {
+            items.push(small_icon(
+                "chevron-right",
+                w - 28.0,
+                y,
+                theme.text_secondary,
+            ));
+        }
+        if entry.enabled {
+            hits.push(Hit {
+                rect: Rect::new(6.0, y, w - 12.0, row),
+                target: Target::MenuItem { id: entry.id },
+                highlight: true,
+            });
+        }
+        y += row;
+    }
+    let first = menu.entries.first().map_or(0, |e| e.id);
+    Content {
+        w,
+        h: y + 6.0,
+        items,
+        hits,
+        key: format!("menu:{}:{first}", menu.title),
+    }
+}
+
+/// The tray row (if any), then one row per item with a close button, then "Clear all".
+fn right_list(
+    right: &RightView,
+    tray: &[TrayIconView],
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> Content {
+    let (items, total) = (&right.items, right.total);
     let w = theme.right_expanded_width;
     let icon_size = 18.0;
     let close = 28.0;
@@ -524,6 +694,27 @@ fn right_list(items: &[ActivityView], total: usize, theme: &Theme, m: &mut dyn M
     let mut draws = Vec::new();
     let mut hits = Vec::new();
     let mut y = 8.0;
+    if !tray.is_empty() {
+        let slot = 34.0;
+        for (i, item) in tray.iter().enumerate() {
+            let rect = Rect::new(8.0 + i as f32 * slot, y, slot, slot);
+            draws.push(tray_icon(item, theme, rect, 20.0));
+            hits.push(Hit {
+                rect,
+                target: Target::Tray {
+                    id: item.id.clone(),
+                },
+                highlight: true,
+            });
+        }
+        y += slot + 4.0;
+        draws.push(Draw::Rect(RoundRect {
+            rect: Rect::new(14.0, y, w - 28.0, 1.0),
+            radius: 0.0,
+            color: theme.button,
+        }));
+        y += 5.0;
+    }
     for a in items {
         let row = Rect::new(6.0, y, w - 12.0, ROW_HEIGHT);
         let title_style = TextStyle::new(13.0, Weight::Semibold);
@@ -719,6 +910,7 @@ pub(crate) mod tests {
             }),
             clock: Some("13:35".into()),
             date: Some("Thursday, 15 October".into()),
+            ..View::default()
         }
     }
 
@@ -850,6 +1042,66 @@ pub(crate) mod tests {
         let (l, r) = (c.hits[0].rect, c.hits[1].rect);
         let mid = (l.x + r.right()) / 2.0;
         assert!((mid - c.w / 2.0).abs() < 0.01);
+    }
+
+    fn tray(n: usize) -> Vec<TrayIconView> {
+        (0..n)
+            .map(|i| TrayIconView {
+                id: format!(":1.{i}/StatusNotifierItem"),
+                title: format!("app {i}"),
+                image: Some(format!("img{i}")),
+                needs_attention: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tray_alone_shows_the_right_island_and_widens_it() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        assert!(right_content(&v, false, &theme, &mut m).is_none());
+        v.tray = tray(2);
+        let only_tray = right_content(&v, false, &theme, &mut m).unwrap();
+        assert_eq!(only_tray.hits.len(), 2);
+        let with_item =
+            right_content(&view(None, &[activity("a", None)]), false, &theme, &mut m).unwrap();
+        v.right = view(None, &[activity("a", None)]).right;
+        let both = right_content(&v, false, &theme, &mut m).unwrap();
+        assert!(both.w > with_item.w && both.w > only_tray.w);
+        // Expanded: tray row on top of the list.
+        let list = right_content(&v, true, &theme, &mut m).unwrap();
+        assert!(matches!(list.hits[0].target, Target::Tray { .. }));
+    }
+
+    #[test]
+    fn open_menu_replaces_the_right_island() {
+        use crate::activity::MenuEntryView;
+        let theme = Theme::default();
+        let entry = |id, label: &str| MenuEntryView {
+            id,
+            label: label.into(),
+            enabled: id != 3,
+            separator: false,
+            toggle: None,
+            submenu: id == 2,
+        };
+        let mut v = view(None, &[activity("a", None)]);
+        v.menu = Some(MenuView {
+            title: "app".into(),
+            entries: vec![entry(1, "Open"), entry(2, "More"), entry(3, "Disabled")],
+            nested: true,
+        });
+        let c = right_content(&v, false, &theme, &mut FakeMeasure).unwrap();
+        let targets: Vec<_> = c.hits.iter().map(|h| h.target.clone()).collect();
+        assert_eq!(
+            targets,
+            [
+                Target::MenuBack,
+                Target::MenuItem { id: 1 },
+                Target::MenuItem { id: 2 }
+            ]
+        );
     }
 
     #[test]

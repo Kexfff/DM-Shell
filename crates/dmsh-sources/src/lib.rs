@@ -13,6 +13,7 @@ mod network;
 mod niri;
 mod notifications;
 mod power;
+pub mod tray;
 mod volume;
 
 use std::future::Future;
@@ -35,15 +36,26 @@ pub enum Event {
         time: String,
         date: String,
     },
+    /// The visible tray items, in a stable order.
+    Tray(Vec<tray::TrayItem>),
+    /// A tray item's menu was fetched (open it), or `None`.
+    Menu(Option<tray::Menu>),
 }
 
 /// What the shell tells sources.
 #[derive(Debug)]
 pub enum Command {
     /// An activity left the shell without its source asking for it.
-    Removed { id: String, reason: Removal },
+    Removed {
+        id: String,
+        reason: Removal,
+    },
     /// One of the activity's actions was invoked (clicked, or via IPC).
-    Invoked { id: String, key: String },
+    Invoked {
+        id: String,
+        key: String,
+    },
+    Tray(tray::Command),
 }
 
 /// Lets the shell send [`Command`]s to the sources thread.
@@ -78,6 +90,7 @@ pub fn spawn(emit: impl Fn(Event) + Send + Sync + 'static) -> std::io::Result<Ha
 async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     let (notifications_tx, notifications_rx) = mpsc::unbounded_channel();
     let (media_tx, media_rx) = mpsc::unbounded_channel();
+    let (tray_tx, tray_rx) = mpsc::unbounded_channel();
 
     tokio::spawn(supervise("clock", clock::run(emitter.clone())));
     tokio::spawn(supervise("niri", niri::run(emitter.clone())));
@@ -86,6 +99,7 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));
     tokio::spawn(supervise("power", power::run(emitter.clone())));
     tokio::spawn(supervise("network", network::run(emitter.clone())));
+    tokio::spawn(supervise("tray", tray::run(emitter.clone(), tray_rx)));
     tokio::spawn(supervise(
         "notifications",
         notifications::run(emitter, notifications_rx),
@@ -105,6 +119,9 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
                 } else if id == media::ID {
                     let _ = media_tx.send(key);
                 }
+            }
+            Command::Tray(command) => {
+                let _ = tray_tx.send(command);
             }
         }
     }

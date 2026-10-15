@@ -211,6 +211,44 @@ pub struct View {
     /// Shown when the idle center expands, e.g. `Thursday, 15 October`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    /// System tray icons, shown on the right island.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tray: Vec<TrayIconView>,
+    /// An open tray menu; the right island shows it as a list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub menu: Option<MenuView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TrayIconView {
+    /// The item's bus address.
+    pub id: String,
+    pub title: String,
+    /// Image key registered with the renderer; `None` draws a placeholder dot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_attention: bool,
+}
+
+/// One level of a tray menu.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MenuView {
+    pub title: String,
+    pub entries: Vec<MenuEntryView>,
+    /// A submenu: show a way back.
+    pub nested: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MenuEntryView {
+    pub id: i32,
+    pub label: String,
+    pub enabled: bool,
+    pub separator: bool,
+    /// `Some(checked)` for check and radio items.
+    pub toggle: Option<bool>,
+    pub submenu: bool,
 }
 
 /// One live activity as reported by `state`.
@@ -380,6 +418,8 @@ impl Activities {
             right,
             clock: None,
             date: None,
+            tray: Vec::new(),
+            menu: None,
         }
     }
 

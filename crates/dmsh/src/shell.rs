@@ -6,11 +6,12 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use dmsh_core::{
-    Activities, IslandKind, Stage, Target, Theme, View,
+    Activities, IslandKind, MenuEntryView, MenuView, Stage, Target, Theme, TrayIconView, View,
     activity::Island,
     ipc::{Event, Reply, Request, Response, StateDump},
 };
-use dmsh_render::Renderer;
+use dmsh_render::{ImageSource, Renderer};
+use dmsh_sources::tray::{self, TrayIcon};
 use dmsh_sources::{Command as SourceCommand, Event as SourceEvent, Removal};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
@@ -54,6 +55,8 @@ use wayland_protocols::wp::{
 
 /// Linux input event code of the primary mouse button.
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+const BTN_MIDDLE: u32 = 0x112;
 
 /// Fractional scales arrive as multiples of 1/120.
 const SCALE_DENOM: u32 = 120;
@@ -102,6 +105,9 @@ pub fn run() -> Result<()> {
         timer: None,
         sources: None,
         subscribers: Vec::new(),
+        tray: Vec::new(),
+        menu: None,
+        menu_output: None,
     };
 
     // Sources run on their own thread and report back through this channel.
@@ -161,6 +167,62 @@ pub struct Shell {
     sources: Option<dmsh_sources::Handle>,
     /// IPC connections that asked for the event stream.
     subscribers: Vec<UnixStream>,
+    tray: Vec<TrayIconView>,
+    menu: Option<OpenMenu>,
+    /// Output whose tray was clicked last; a menu fetched for it opens there.
+    menu_output: Option<usize>,
+}
+
+/// A tray menu shown on one output's right island.
+struct OpenMenu {
+    menu: tray::Menu,
+    output: usize,
+    /// Submenu ids from the top level to the level shown.
+    path: Vec<i32>,
+}
+
+impl OpenMenu {
+    fn view(&self) -> MenuView {
+        let mut entries = &self.menu.entries;
+        for id in &self.path {
+            match entries.iter().find(|e| e.id == *id) {
+                Some(e) => entries = &e.children,
+                None => break,
+            }
+        }
+        let mut shown: Vec<MenuEntryView> = Vec::new();
+        for e in entries {
+            // Apps often send doubled, leading or trailing separators.
+            if e.separator && shown.last().is_none_or(|last| last.separator) {
+                continue;
+            }
+            shown.push(MenuEntryView {
+                id: e.id,
+                label: e.label.clone(),
+                enabled: e.enabled,
+                separator: e.separator,
+                toggle: e.toggle,
+                submenu: !e.children.is_empty(),
+            });
+        }
+        if shown.last().is_some_and(|last| last.separator) {
+            shown.pop();
+        }
+        MenuView {
+            title: self.menu.title.clone(),
+            entries: shown,
+            nested: !self.path.is_empty(),
+        }
+    }
+
+    /// The entry with `id` at the level shown.
+    fn entry(&self, id: i32) -> Option<&tray::MenuEntry> {
+        let mut entries = &self.menu.entries;
+        for p in &self.path {
+            entries = &entries.iter().find(|e| e.id == *p)?.children;
+        }
+        entries.iter().find(|e| e.id == id)
+    }
 }
 
 /// Transient center activities show only on the focused output, so outputs can differ.
@@ -277,6 +339,7 @@ impl Shell {
         let view_for = |focused| View {
             clock: self.clock.clone(),
             date: self.date.clone(),
+            tray: self.tray.clone(),
             ..self.activities.view_for(now, focused)
         };
         let views = Views {
@@ -318,6 +381,15 @@ impl Shell {
                     self.update_all();
                 }
             }
+            SourceEvent::Tray(items) => self.set_tray(items),
+            SourceEvent::Menu(menu) => {
+                self.menu = menu.map(|menu| OpenMenu {
+                    menu,
+                    output: self.menu_output.unwrap_or(0),
+                    path: Vec::new(),
+                });
+                self.update_all();
+            }
             SourceEvent::Clock { time, date } => {
                 self.clock = Some(time);
                 self.date = Some(date);
@@ -352,8 +424,94 @@ impl Shell {
     }
 
     /// Performs a click on an island.
-    fn click(&mut self, target: Target) {
+    /// Registers tray icons with the renderer and shows them.
+    fn set_tray(&mut self, items: Vec<tray::TrayItem>) {
+        self.tray = items
+            .into_iter()
+            .map(|item| {
+                let image = item.icon.map(|icon| {
+                    let (key, source) = match icon {
+                        TrayIcon::Pixels {
+                            width,
+                            height,
+                            rgba,
+                            hash,
+                        } => (
+                            format!("px:{}:{hash:x}", item.id),
+                            ImageSource::Rgba {
+                                width,
+                                height,
+                                data: rgba,
+                            },
+                        ),
+                        TrayIcon::File(path) => {
+                            (format!("file:{}", path.display()), ImageSource::File(path))
+                        }
+                    };
+                    self.renderer.set_image(&key, source);
+                    key
+                });
+                TrayIconView {
+                    id: item.id,
+                    title: item.title,
+                    image,
+                    needs_attention: item.needs_attention,
+                }
+            })
+            .collect();
+        let keys: Vec<String> = self.tray.iter().filter_map(|t| t.image.clone()).collect();
+        self.renderer
+            .retain_images(|k| keys.iter().any(|key| key == k));
+        self.refresh();
+    }
+
+    fn tray_command(&self, command: tray::Command) {
+        if let Some(sources) = &self.sources {
+            sources.send(SourceCommand::Tray(command));
+        }
+    }
+
+    fn close_menu(&mut self) {
+        if self.menu.take().is_some() {
+            self.update_all();
+        }
+    }
+
+    /// Performs a click on an island of output `index`.
+    fn click(&mut self, index: usize, target: Target, button: u32) {
         let request = match target {
+            Target::Tray { id } => {
+                self.menu_output = Some(index);
+                let item = id;
+                self.tray_command(match button {
+                    BTN_RIGHT => tray::Command::OpenMenu { item },
+                    BTN_MIDDLE => tray::Command::SecondaryActivate { item },
+                    _ => tray::Command::Activate { item },
+                });
+                return;
+            }
+            Target::MenuItem { id } => {
+                let Some(menu) = &mut self.menu else { return };
+                match menu.entry(id) {
+                    Some(entry) if !entry.children.is_empty() => menu.path.push(id),
+                    Some(_) => {
+                        let item = menu.menu.item.clone();
+                        self.menu = None;
+                        self.tray_command(tray::Command::MenuClick { item, entry: id });
+                    }
+                    None => return,
+                }
+                self.update_all();
+                return;
+            }
+            Target::MenuBack => {
+                if let Some(menu) = &mut self.menu {
+                    menu.path.pop();
+                    self.update_all();
+                }
+                return;
+            }
+            _ if button != BTN_LEFT => return,
             Target::Invoke { id, key } => Request::Invoke { id, key },
             Target::Dismiss { id } => Request::Dismiss { id },
             Target::ClearRight => Request::Clear {
@@ -389,18 +547,23 @@ impl Shell {
             (Some(focused), Some(name)) => focused == name,
             _ => true,
         };
-        let view = if focused {
-            &self.views.focused
+        let mut view = if focused {
+            self.views.focused.clone()
         } else {
-            &self.views.other
+            self.views.other.clone()
         };
+        view.menu = self
+            .menu
+            .as_ref()
+            .filter(|m| m.output == index)
+            .map(OpenMenu::view);
         let island = &mut self.islands[index];
         let Some((width, _)) = island.size else {
             return;
         };
         island.stage.update(
             width as f32,
-            view,
+            &view,
             island.hover,
             &self.theme,
             &mut self.renderer,
@@ -783,12 +946,15 @@ impl PointerHandler for Shell {
                     self.set_pointer(index, Some((x, y)));
                 }
                 PointerEventKind::Leave { .. } => {
+                    if self.menu.as_ref().is_some_and(|m| m.output == index) {
+                        self.close_menu();
+                    }
                     self.set_pointer(index, None);
                     self.set_hover(index, None);
                 }
-                PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                PointerEventKind::Press { button, .. } => {
                     if let Some(target) = self.islands[index].stage.target_at(x, y) {
-                        self.click(target);
+                        self.click(index, target, button);
                     }
                 }
                 _ => {}

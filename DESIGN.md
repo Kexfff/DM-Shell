@@ -106,11 +106,19 @@ the rest keep running. Nothing polls: every source is event-driven.
 | media | MPRIS on the session bus (playerctld ignored) | center, low priority; newest playing player, else newest paused (kept 5 min) |
 | power | UPower `DisplayDevice` | right: charging / on battery / fully charged; battery low ≤ 20 % (flow, high), critical ≤ 5 % (center, critical) |
 | network | NetworkManager `PrimaryConnection`, settled for 1.5 s | right: "Wi-Fi: <name>", "Disconnected" |
-| notifications | dmsh owns `org.freedesktop.Notifications` | flow activity per notification; urgency → priority; emits `NotificationClosed` with the right reason |
+| notifications | dmsh owns `org.freedesktop.Notifications` | flow activity per notification; urgency → priority; actions; emits `ActionInvoked` / `NotificationClosed` with the right reason |
+| tray | StatusNotifierItem host (or watcher) + dbusmenu | icons on the right island, menus inside it |
 
 - **Notifications**: only one daemon can own the name. Stop mako/swaync/a Quickshell
   notification server to use dmsh's; otherwise dmsh warns and runs without it.
-- **System tray** (planned): StatusNotifierItem host, shown in the right island.
+- **System tray**: StatusNotifierItem host. If another program owns
+  `org.kde.StatusNotifierWatcher` (e.g. a Quickshell bar), dmsh registers with it as a
+  host; otherwise dmsh runs the watcher itself. Icons come from the item's pixmap or the
+  icon theme (GTK `gtk-icon-theme-name`, its `Inherits`, hicolor, pixmaps), drawn as
+  PNG/SVG at exact pixel size. Icons sit at the end of the right island; left click
+  activates (menu-only items open their menu), right click opens the item's
+  `com.canonical.dbusmenu` menu *inside the right island* (submenus navigate in place,
+  leaving the island closes it), middle click is secondary activate.
 
 ## AI-agent friendliness
 
@@ -167,7 +175,7 @@ the rest keep running. Nothing polls: every source is event-driven.
 3. **Text and icons, spring-based morphing, center→right slide, hover expand.** ✓
 4. **Expanded views**: clickable buttons with hover highlights, notification actions
    (`ActionInvoked`, `resident`), right-island list with per-row close and "Clear all",
-   media controls (previous / play-pause / next over MPRIS). ✓ Tray: next.
+   media controls (previous / play-pause / next over MPRIS), system tray with menus. ✓
 5. Config (KDL), niri keybind integration (e.g. `dmsh focus`).
 
 ## Open questions

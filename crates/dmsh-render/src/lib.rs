@@ -2,10 +2,12 @@
 //! by headless PNG output, so both always draw exactly the same pixels.
 
 mod icons;
+mod images;
 mod text;
 
 use dmsh_core::{Color, Draw, Measure, Rect, RoundRect, Scene, TextStyle};
 pub use icons::names as icon_names;
+pub use images::ImageSource;
 pub use tiny_skia;
 use tiny_skia::{FillRule, Paint, PathBuilder, PixmapMut, Transform};
 
@@ -15,6 +17,7 @@ use crate::text::{Clip, TextEngine};
 pub struct Renderer {
     text: TextEngine,
     icons: icons::Icons,
+    images: images::Images,
 }
 
 impl Default for Renderer {
@@ -28,7 +31,18 @@ impl Renderer {
         Self {
             text: TextEngine::new(),
             icons: icons::Icons::default(),
+            images: images::Images::default(),
         }
+    }
+
+    /// Registers (or replaces) an image that scenes can draw by `key`.
+    pub fn set_image(&mut self, key: &str, source: ImageSource) {
+        self.images.set(key, source);
+    }
+
+    /// Forgets images whose keys aren't kept.
+    pub fn retain_images(&mut self, keep: impl Fn(&str) -> bool) {
+        self.images.retain(keep);
     }
 
     /// Clears `pixmap` and draws `scene`, scaling logical coordinates by `scale`.
@@ -52,14 +66,19 @@ impl Renderer {
                         let clip = group.clip.map(|c| pixel_clip(c, scale));
                         self.text.draw(t, scale, alpha, clip, pixmap);
                     }
+                    // Icons and images are small; draw them only once they fit the island.
                     Draw::Icon(i) => {
-                        // Icons are small; draw them only once they fit the island.
-                        let fits = group.clip.is_none_or(|c| {
-                            intersect(i.rect, c)
-                                .is_some_and(|r| r.w >= i.rect.w - 0.5 && r.h >= i.rect.h - 0.5)
-                        });
-                        if fits {
+                        if fits(i.rect, group.clip) {
                             self.icons.draw(i, scale, alpha, pixmap);
+                        }
+                    }
+                    Draw::Image(i) => {
+                        if fits(i.rect, group.clip) {
+                            let x = (i.rect.x * scale).round() as i32;
+                            let y = (i.rect.y * scale).round() as i32;
+                            let w = (i.rect.w * scale).round() as u32;
+                            let h = (i.rect.h * scale).round() as u32;
+                            self.images.draw(&i.key, (x, y, w, h), alpha, pixmap);
                         }
                     }
                 }
@@ -96,6 +115,12 @@ impl Measure for Renderer {
     ) -> (f32, f32) {
         self.text.measure(text, style, max_width, max_lines)
     }
+}
+
+fn fits(rect: Rect, clip: Option<Rect>) -> bool {
+    clip.is_none_or(|c| {
+        intersect(rect, c).is_some_and(|r| r.w >= rect.w - 0.5 && r.h >= rect.h - 0.5)
+    })
 }
 
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
