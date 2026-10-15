@@ -1,14 +1,22 @@
 //! Wayland side: one full-width layer surface per output, both islands drawn into it.
 
+use std::time::Instant;
+
 use anyhow::{Context, Result};
-use dmsh_core::{Layout, Theme};
+use dmsh_core::{
+    Activities, Layout, Theme, View,
+    ipc::{Reply, Request, Response, StateDump},
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_registry,
     dispatch2::Dispatch2,
     output::{OutputHandler, OutputState},
     reexports::{
-        calloop::EventLoop,
+        calloop::{
+            EventLoop, LoopHandle, RegistrationToken,
+            timer::{TimeoutAction, Timer},
+        },
         calloop_wayland_source::WaylandSource,
         client::{
             Connection, Proxy, QueueHandle,
@@ -51,6 +59,9 @@ pub fn run() -> Result<()> {
         log::warn!("fractional scaling unavailable, using integer scale");
     }
 
+    let mut event_loop: EventLoop<Shell> = EventLoop::try_new()?;
+    let _socket = crate::ipc::listen(&event_loop.handle())?;
+
     let mut shell = Shell {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -61,9 +72,12 @@ pub fn run() -> Result<()> {
         fractional,
         theme: Theme::default(),
         islands: Vec::new(),
+        activities: Activities::default(),
+        view: View::default(),
+        loop_handle: event_loop.handle(),
+        timer: None,
     };
 
-    let mut event_loop: EventLoop<Shell> = EventLoop::try_new()?;
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())
         .map_err(|e| anyhow::anyhow!("inserting Wayland source: {e}"))?;
@@ -71,7 +85,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-struct Shell {
+pub struct Shell {
     registry_state: RegistryState,
     output_state: OutputState,
     compositor: CompositorState,
@@ -84,6 +98,12 @@ struct Shell {
     )>,
     theme: Theme,
     islands: Vec<OutputSurface>,
+    activities: Activities,
+    /// What the islands currently show; outputs are redrawn when it changes.
+    view: View,
+    loop_handle: LoopHandle<'static, Shell>,
+    /// Fires at the arbiter's next deadline (expiry or center→right move).
+    timer: Option<RegistrationToken>,
 }
 
 /// The layer surface holding both islands on one output.
@@ -110,6 +130,63 @@ impl Drop for OutputSurface {
 }
 
 impl Shell {
+    pub fn handle(&mut self, request: Request) -> Response {
+        self.refresh();
+        let now = Instant::now();
+        let reply = match request {
+            Request::Push(spec) => self.activities.push(spec, now).map(|()| Reply::Done),
+            Request::Dismiss { id } => Ok(Reply::Dismissed {
+                existed: self.activities.dismiss(&id),
+            }),
+            Request::Clear => {
+                self.activities.clear();
+                Ok(Reply::Done)
+            }
+            Request::State => Ok(Reply::State(StateDump {
+                view: self.activities.view(now),
+                activities: self.activities.states(now),
+            })),
+            Request::Version => Ok(Reply::Version {
+                version: env!("CARGO_PKG_VERSION").into(),
+            }),
+        };
+        self.refresh();
+        match reply {
+            Ok(reply) => Response::Ok(reply),
+            Err(e) => Response::Error(e),
+        }
+    }
+
+    /// Drops expired activities, redraws if the view changed, and re-arms the timer for
+    /// the next deadline. Nothing runs between deadlines, so idle CPU stays at zero.
+    fn refresh(&mut self) {
+        let now = Instant::now();
+        self.activities.expire(now);
+        let view = self.activities.view(now);
+        if view != self.view {
+            self.view = view;
+            for i in 0..self.islands.len() {
+                self.draw(i);
+            }
+        }
+
+        if let Some(token) = self.timer.take() {
+            self.loop_handle.remove(token);
+        }
+        if let Some(deadline) = self.activities.next_deadline(now) {
+            let timer = Timer::from_deadline(deadline);
+            let token = self.loop_handle.insert_source(timer, |_, _, shell| {
+                shell.timer = None;
+                shell.refresh();
+                TimeoutAction::Drop
+            });
+            match token {
+                Ok(token) => self.timer = Some(token),
+                Err(e) => log::error!("arming timer: {e}"),
+            }
+        }
+    }
+
     fn add_output(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let surface = self.compositor.create_surface(qh);
         let scaling = self.fractional.as_ref().map(|(manager, viewporter)| {
@@ -166,8 +243,8 @@ impl Shell {
         let to_buffer = |v: u32| ((v * island.scale + SCALE_DENOM / 2) / SCALE_DENOM).max(1);
         let (bw, bh) = (to_buffer(width), to_buffer(height));
 
-        let layout = Layout::compute(width as f32, &self.theme);
-        let scene = layout.scene(&self.theme);
+        let layout = Layout::compute(width as f32, &self.theme, &self.view);
+        let scene = layout.scene(&self.theme, &self.view);
 
         let (buffer, canvas) = match self.pool.create_buffer(
             bw as i32,
@@ -190,7 +267,7 @@ impl Shell {
 
         let surface = island.layer.wl_surface();
         if let Ok(region) = Region::new(&self.compositor) {
-            for rect in scene.input_rects() {
+            for rect in &scene.islands {
                 let (x, y, w, h) = rect.round_out();
                 region.add(x, y, w, h);
             }

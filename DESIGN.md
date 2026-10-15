@@ -87,19 +87,42 @@ Stack: Rust, `smithay-client-toolkit`, `calloop`, `tiny-skia`; later `cosmic-tex
    `dmsh activity push --id build --title "cargo build" --progress 0.4 --placement center --ttl 30s`.
    JSON Schema generated from the Rust types; an MCP wrapper can come later. Example use:
    Claude Code hooks push "needs permission" / "task done" to the island.
+   Implemented today:
+   ```sh
+   dmsh activity push --id build --title "cargo build" --progress 0.4 --placement center
+   dmsh activity push --id perm --title "Claude needs permission" --placement center --priority critical
+   dmsh activity dismiss build
+   dmsh state                                   # JSON: view + every live activity
+   dmsh msg '{"cmd":"push","id":"x","title":"Hi","ttl_ms":3000}'   # raw protocol
+   dmsh schema                                  # JSON Schema of requests/responses
+   ```
+   Lifecycle rules: `ttl` counts from the last push of an id (a repeatedly pushed OSD stays
+   up); a `flow` activity's center phase counts from its first push (updating a
+   notification doesn't pop it back). Center winner: priority, then transient over
+   persistent, then most recently updated. Default placement is `flow`.
 2. **Agents work on the code.** `dmsh render` draws the islands headlessly to PNG so a
    change can be checked without a display; snapshot tests; `dmsh state --json` dump.
 
 ## Phases
 
 0. **Skeleton** — layer surface per output, two static pills, input region, fractional
-   scale, headless `dmsh render`. ← current
-1. Activities + arbiter + IPC socket + CLI. Agents can push activities from here on.
+   scale, headless `dmsh render`. ✓
+1. **Activities + arbiter + IPC socket + CLI.** Agents can push activities from here on.
+   Until text lands, islands show placeholders: a priority-colored dot, a progress bar,
+   and one dim dot per extra item on the right. ✓
 2. Sources: niri, clock, volume/brightness OSD, MPRIS, notifications, battery, Wi-Fi.
 3. Text and icons, spring-based morphing, center→right slide, hover expand.
 4. Expanded views: notification list and actions, media controls, tray.
 5. Config (KDL), niri keybind integration (e.g. `dmsh focus`).
 
 ## Open questions
+
+- **Buffer memory.** A full-width, 320 px tall surface costs `w × 320 × scale² × 4` bytes
+  per buffer (≈ 6.4 MB at 1645 px / 1.75×, two in flight). Fine on one laptop panel, but
+  it blows the 20 MB budget on several 4K outputs. Before phase 3: keep the surface at
+  strip height while collapsed and grow it only for expansion (one configure round trip
+  is acceptable there), or give each island its own subsurface sized to the island.
+- Transient center events still appear on every monitor; "focused monitor only" needs
+  niri IPC (phase 2).
 
 - Workspaces indicator: not planned for now (niri's overview covers it). Revisit if missed.
