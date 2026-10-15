@@ -1,0 +1,9 @@
+[package]
+name = "dmsh-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dmsh-core = { version = "0.1.0", path = "../dmsh-core" }
+tiny-skia = "0.12.0"

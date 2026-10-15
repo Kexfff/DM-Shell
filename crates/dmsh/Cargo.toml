@@ -1,0 +1,14 @@
+[package]
+name = "dmsh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+dmsh-core = { version = "0.1.0", path = "../dmsh-core" }
+dmsh-render = { version = "0.1.0", path = "../dmsh-render" }
+env_logger = "0.11.11"
+log = "0.4.34"
+smithay-client-toolkit = "0.21.1"
+wayland-protocols = { version = "0.32.13", features = ["staging", "client"] }
