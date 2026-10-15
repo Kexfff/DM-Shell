@@ -432,6 +432,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dmsh-core",
+ "enumflags2",
  "futures-util",
  "inotify",
  "log",

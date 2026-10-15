@@ -166,20 +166,32 @@ pub(crate) async fn run(
     let icons = Arc::new(Mutex::new(IconFinder::new()));
     let (tx, mut changes) = mpsc::unbounded_channel::<Change>();
     connect_watcher(&conn, tx.clone()).await?;
+    let dbus = DBusProxy::new(&conn).await?;
+    let mut watcher_owner = dbus
+        .receive_name_owner_changed_with_args(&[(0, WATCHER)])
+        .await?;
+    let mut owners = dbus.receive_name_owner_changed().await?;
 
     let mut followers: HashMap<String, AbortHandle> = HashMap::new();
     let mut infos: BTreeMap<String, Info> = BTreeMap::new();
+    // Registered address → normalized id (unique bus name + path), so an app that
+    // registers under both its well-known and unique name appears once.
+    let mut aliases: HashMap<String, String> = HashMap::new();
     let mut shown: Vec<TrayItem> = Vec::new();
     loop {
         tokio::select! {
             Some(change) = changes.recv() => match change {
-                Change::Added(id) => {
+                Change::Added(registered) => {
+                    let id = normalize(&dbus, &registered).await;
+                    aliases.insert(registered, id.clone());
                     if let std::collections::hash_map::Entry::Vacant(slot) = followers.entry(id) {
                         let id = slot.key().clone();
                         slot.insert(follow(conn.clone(), id, icons.clone(), tx.clone()));
                     }
                 }
-                Change::Removed(id) => {
+                Change::Removed(registered) => {
+                    let id = aliases.remove(&registered).unwrap_or(registered);
+                    aliases.retain(|_, v| *v != id);
                     if let Some(handle) = followers.remove(&id) {
                         handle.abort();
                     }
@@ -191,6 +203,43 @@ pub(crate) async fn run(
                     }
                 }
             },
+            // The watcher we registered with went away (e.g. its bar exited): become the
+            // watcher ourselves; apps re-register with it.
+            Some(signal) = watcher_owner.next() => {
+                let gone = signal.args().is_ok_and(|a| a.new_owner().is_none());
+                if gone {
+                    // Known items stay: many apps (Qt) never re-register with a new
+                    // watcher. They're dropped when their app leaves the bus.
+                    log::info!("tray: the StatusNotifierWatcher left; taking over");
+                    if let Err(e) = connect_watcher(&conn, tx.clone()).await {
+                        log::warn!("tray: taking over the watcher: {e:#}");
+                    }
+                }
+                continue;
+            }
+            // An app left the bus: drop its items even if no watcher says so.
+            Some(signal) = owners.next() => {
+                let Ok(args) = signal.args() else { continue };
+                if args.new_owner().is_some() || !args.name().starts_with(':') {
+                    continue;
+                }
+                let gone = args.name().to_string();
+                let ids: Vec<String> = followers
+                    .keys()
+                    .filter(|id| address(id).0 == gone)
+                    .cloned()
+                    .collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                for id in ids {
+                    if let Some(handle) = followers.remove(&id) {
+                        handle.abort();
+                    }
+                    infos.remove(&id);
+                    aliases.retain(|_, v| *v != id);
+                }
+            }
             Some(command) = commands.recv() => {
                 if let Err(e) = handle(&conn, &infos, command, &emitter).await {
                     log::warn!("tray: {e:#}");
@@ -253,6 +302,22 @@ async fn connect_watcher(conn: &Connection, tx: mpsc::UnboundedSender<Change>) -
         }
     });
     Ok(())
+}
+
+/// Rewrites an item address to use the owner's unique bus name.
+async fn normalize(dbus: &DBusProxy<'_>, registered: &str) -> String {
+    let (name, path) = address(registered);
+    if name.starts_with(':') {
+        return format!("{name}{path}");
+    }
+    let owner = match zbus::names::BusName::try_from(name) {
+        Ok(bus_name) => dbus.get_name_owner(bus_name).await.ok(),
+        Err(_) => None,
+    };
+    match owner {
+        Some(unique) => format!("{unique}{path}"),
+        None => format!("{name}{path}"),
+    }
 }
 
 /// Splits an item address into bus name and object path.

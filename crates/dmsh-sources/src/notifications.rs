@@ -12,6 +12,7 @@ use dmsh_core::{
     Action, ActivitySpec, Placement, Priority,
     activity::{MAX_ACTIONS, MAX_TEXT_LEN},
 };
+use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use zbus::{
     fdo::{RequestNameFlags, RequestNameReply},
@@ -193,14 +194,28 @@ pub async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command
         .build()
         .await?;
 
-    let reply = conn
-        .request_name_with_flags(NAME, RequestNameFlags::DoNotQueue.into())
-        .await;
-    match reply {
-        Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {
+    // Queue for the name: if another daemon has it, dmsh takes over when it exits.
+    let dbus = zbus::fdo::DBusProxy::new(&conn).await?;
+    let mut acquired = dbus.receive_name_acquired().await?;
+    match conn
+        .request_name_with_flags(NAME, enumflags2::BitFlags::<RequestNameFlags>::empty())
+        .await?
+    {
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {
             log::info!("notification daemon running")
         }
-        _ => bail!("{NAME} is owned by another daemon; stop it to let dmsh show notifications"),
+        RequestNameReply::InQueue => {
+            log::info!("{NAME} is owned by another daemon; dmsh takes over when it exits");
+            tokio::spawn(async move {
+                while let Some(signal) = acquired.next().await {
+                    if signal.args().is_ok_and(|a| a.name() == NAME) {
+                        log::info!("notification daemon running (took over {NAME})");
+                        return;
+                    }
+                }
+            });
+        }
+        RequestNameReply::Exists => bail!("{NAME} is owned by another daemon"),
     }
 
     let iface = conn.object_server().interface::<_, Server>(PATH).await?;
