@@ -235,6 +235,7 @@ mod tests {
         let active_view = View {
             center: Some(activity(None)),
             right: None,
+            clock: None,
         };
         let active = Layout::compute(1645.0, &theme, &active_view);
         for l in [idle, active] {
@@ -261,6 +262,7 @@ mod tests {
                 newest: activity(None),
                 more: 0,
             }),
+            clock: None,
         };
         let right = Layout::compute(1000.0, &theme, &view).right.unwrap();
         assert_eq!(right.x + right.w, 1000.0 - theme.right_margin);
@@ -273,6 +275,7 @@ mod tests {
         let view = View {
             center: Some(activity(Some(1.0))),
             right: None,
+            clock: None,
         };
         let l = Layout::compute(1000.0, &theme, &view);
         let shapes = l.scene(&theme, &view).shapes;
@@ -289,6 +292,7 @@ mod tests {
                 newest: activity(None),
                 more: 3,
             }),
+            clock: None,
         };
         let mut scene = Layout::compute(1000.0, &theme, &view).scene(&theme, &view);
         assert_eq!(scene.canvas_height(&theme), theme.strip_height);

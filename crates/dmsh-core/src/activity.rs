@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// Most activities kept at once; pushes beyond this are rejected.
 pub const MAX_ACTIVITIES: usize = 256;
-const MAX_TEXT_LEN: usize = 1024;
+/// Longest id, title or body accepted, in bytes.
+pub const MAX_TEXT_LEN: usize = 1024;
 
 /// Where an activity is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -135,6 +136,9 @@ pub struct RightView {
 pub struct View {
     pub center: Option<ActivityView>,
     pub right: Option<RightView>,
+    /// Idle center content, e.g. `13:08`. Filled in by the shell, not the arbiter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<String>,
 }
 
 /// One live activity as reported by `state`.
@@ -227,16 +231,19 @@ impl Activities {
         self.entries.len() != before
     }
 
-    pub fn clear(&mut self) {
-        self.entries.clear();
+    /// Removes everything; returns the removed ids.
+    pub fn clear(&mut self) -> Vec<String> {
+        self.entries.drain(..).map(|e| e.spec.id).collect()
     }
 
     /// Drops expired activities; returns whether anything was removed.
-    pub fn expire(&mut self, now: Instant) -> bool {
-        let before = self.entries.len();
-        self.entries
-            .retain(|e| e.expires_at().is_none_or(|t| now < t));
-        self.entries.len() != before
+    /// Drops expired activities; returns their ids.
+    pub fn expire(&mut self, now: Instant) -> Vec<String> {
+        let (live, expired) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|e| e.expires_at().is_none_or(|t| now < t));
+        self.entries = live;
+        expired.into_iter().map(|e: Entry| e.spec.id).collect()
     }
 
     /// The next moment the view may change without any new input.
@@ -250,6 +257,12 @@ impl Activities {
     }
 
     pub fn view(&self, now: Instant) -> View {
+        self.view_for(now, true)
+    }
+
+    /// The view for one output. Transient center activities (notifications, OSDs) appear
+    /// only on the focused output; other outputs fall back to persistent ones or idle.
+    pub fn view_for(&self, now: Instant, focused: bool) -> View {
         let live = || {
             self.entries
                 .iter()
@@ -258,6 +271,7 @@ impl Activities {
 
         let center = live()
             .filter(|e| e.island(now) == Island::Center)
+            .filter(|e| focused || !e.is_transient())
             .max_by_key(|e| (e.spec.priority, e.is_transient(), e.updated))
             .map(Entry::view);
 
@@ -271,7 +285,11 @@ impl Activities {
             more: right.len() - 1,
         });
 
-        View { center, right }
+        View {
+            center,
+            right,
+            clock: None,
+        }
     }
 
     pub fn states(&self, now: Instant) -> Vec<ActivityState> {
@@ -342,8 +360,8 @@ mod tests {
         a.push(osd.clone(), t0).unwrap();
         a.push(osd, t0 + ms(1000)).unwrap();
 
-        assert!(!a.expire(t0 + ms(2000)));
-        assert!(a.expire(t0 + ms(2500)));
+        assert!(a.expire(t0 + ms(2000)).is_empty());
+        assert_eq!(a.expire(t0 + ms(2500)), ["vol"]);
         assert_eq!(center_id(&a, t0 + ms(2500)), None);
     }
 
@@ -381,6 +399,31 @@ mod tests {
         };
         a.push(urgent, t0).unwrap();
         assert_eq!(center_id(&a, t0), Some("perm".into()));
+    }
+
+    #[test]
+    fn unfocused_outputs_skip_transient_center_activities() {
+        let t0 = Instant::now();
+        let mut a = Activities::default();
+        a.push(spec("media", Placement::Center), t0).unwrap();
+        a.push(spec("notif", Placement::Flow), t0).unwrap();
+        assert_eq!(a.view_for(t0, true).center.unwrap().id, "notif");
+        assert_eq!(a.view_for(t0, false).center.unwrap().id, "media");
+        // The right island is the same everywhere.
+        let later = t0 + ms(2000);
+        assert_eq!(
+            a.view_for(later, false).right,
+            a.view_for(later, true).right
+        );
+    }
+
+    #[test]
+    fn clear_returns_removed_ids() {
+        let t0 = Instant::now();
+        let mut a = Activities::default();
+        a.push(spec("a", Placement::Right), t0).unwrap();
+        assert_eq!(a.clear(), ["a"]);
+        assert!(a.view(t0).right.is_none());
     }
 
     #[test]

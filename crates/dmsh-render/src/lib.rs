@@ -88,6 +88,7 @@ mod tests {
         let view = View {
             center: None,
             right: Some(RightView { newest, more: 0 }),
+            clock: None,
         };
         let layout = Layout::compute(1645.0, &theme, &view);
         let mut pixmap = Pixmap::new(2879, 560).unwrap();

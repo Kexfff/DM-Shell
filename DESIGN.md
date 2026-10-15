@@ -78,12 +78,27 @@ crates/
 Stack: Rust, `smithay-client-toolkit`, `calloop`, `tiny-skia`; later `cosmic-text`
 (text), `resvg` (icons), `zbus` (D-Bus), `niri-ipc`, KDL config.
 
-### System integrations (planned)
+### Sources
 
-- **Notifications**: dmsh owns `org.freedesktop.Notifications` (disable mako/swaync). If
-  the name is taken it warns and runs without notifications.
-- **System tray**: StatusNotifierItem host, shown in the right island.
-- **Media**: MPRIS.
+`dmsh-sources` runs on its own thread (single-threaded tokio runtime) so the Wayland
+thread never waits on D-Bus or subprocesses. Sources speak the same `Request`s as IPC
+clients, plus focused-output and clock events. A source that can't start logs a warning;
+the rest keep running. Nothing polls: every source is event-driven.
+
+| Source | Mechanism | Shows |
+|---|---|---|
+| niri | event stream on `$NIRI_SOCKET` | focused output; keyboard layout OSD; "Screen is being shared" (right, while a cast is active) |
+| clock | one wakeup per minute boundary | idle center text (`view.clock`) |
+| volume | `pactl subscribe`, then `wpctl get-volume` only on sink/server events | center OSD, 1.5 s |
+| brightness | inotify on `/sys/class/backlight/*/brightness` | center OSD, 1.5 s |
+| media | MPRIS on the session bus (playerctld ignored) | center, low priority; newest playing player, else newest paused (kept 5 min) |
+| power | UPower `DisplayDevice` | right: charging / on battery / fully charged; battery low ≤ 20 % (flow, high), critical ≤ 5 % (center, critical) |
+| network | NetworkManager `PrimaryConnection`, settled for 1.5 s | right: "Wi-Fi: <name>", "Disconnected" |
+| notifications | dmsh owns `org.freedesktop.Notifications` | flow activity per notification; urgency → priority; emits `NotificationClosed` with the right reason |
+
+- **Notifications**: only one daemon can own the name. Stop mako/swaync/a Quickshell
+  notification server to use dmsh's; otherwise dmsh warns and runs without it.
+- **System tray** (planned): StatusNotifierItem host, shown in the right island.
 
 ## AI-agent friendliness
 
@@ -115,14 +130,17 @@ Stack: Rust, `smithay-client-toolkit`, `calloop`, `tiny-skia`; later `cosmic-tex
 1. **Activities + arbiter + IPC socket + CLI.** Agents can push activities from here on.
    Until text lands, islands show placeholders: a priority-colored dot, a progress bar,
    and one dim dot per extra item on the right. ✓
-2. Sources: niri, clock, volume/brightness OSD, MPRIS, notifications, battery, Wi-Fi.
+2. **Sources**: niri, clock, volume/brightness OSD, MPRIS, notifications, battery, Wi-Fi.
+   Transient center activities show only on the focused output. ✓
 3. Text and icons, spring-based morphing, center→right slide, hover expand.
 4. Expanded views: notification list and actions, media controls, tray.
 5. Config (KDL), niri keybind integration (e.g. `dmsh focus`).
 
 ## Open questions
 
-- Transient center events still appear on every monitor; "focused monitor only" needs
-  niri IPC (phase 2).
+- Clock after suspend: the minute timer uses a monotonic clock, which stops during
+  suspend, so the clock can lag up to a minute after resume. Fix by also refreshing on
+  logind's `PrepareForSleep(false)` once the clock is visible (phase 3).
+- Multi-monitor focus handling is unit-tested but not yet tried on a second monitor.
 
 - Workspaces indicator: not planned for now (niri's overview covers it). Revisit if missed.

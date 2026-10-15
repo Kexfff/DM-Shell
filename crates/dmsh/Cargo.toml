@@ -9,6 +9,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 dmsh-core = { version = "0.1.0", path = "../dmsh-core" }
 dmsh-render = { version = "0.1.0", path = "../dmsh-render" }
+dmsh-sources = { version = "0.1.0", path = "../dmsh-sources" }
 env_logger = "0.11.11"
 log = "0.4.34"
 serde = "1.0.229"

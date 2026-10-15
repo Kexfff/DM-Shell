@@ -7,6 +7,7 @@ use dmsh_core::{
     Activities, Layout, Theme, View,
     ipc::{Reply, Request, Response, StateDump},
 };
+use dmsh_sources::{Command as SourceCommand, Event as SourceEvent, Removal};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_registry,
@@ -14,7 +15,7 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     reexports::{
         calloop::{
-            EventLoop, LoopHandle, RegistrationToken,
+            EventLoop, LoopHandle, RegistrationToken, channel,
             timer::{TimeoutAction, Timer},
         },
         calloop_wayland_source::WaylandSource,
@@ -72,10 +73,30 @@ pub fn run() -> Result<()> {
         theme: Theme::default(),
         islands: Vec::new(),
         activities: Activities::default(),
-        view: View::default(),
+        views: Views::default(),
+        focused_output: None,
+        clock: None,
         loop_handle: event_loop.handle(),
         timer: None,
+        sources: None,
     };
+
+    // Sources run on their own thread and report back through this channel.
+    let (source_tx, source_rx) = channel::channel::<SourceEvent>();
+    event_loop
+        .handle()
+        .insert_source(source_rx, |event, _, shell| {
+            if let channel::Event::Msg(event) = event {
+                shell.on_source_event(event);
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("inserting sources channel: {e}"))?;
+    match dmsh_sources::spawn(move |event| {
+        let _ = source_tx.send(event);
+    }) {
+        Ok(handle) => shell.sources = Some(handle),
+        Err(e) => log::error!("starting sources: {e}"),
+    }
 
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())
@@ -98,10 +119,22 @@ pub struct Shell {
     islands: Vec<OutputSurface>,
     activities: Activities,
     /// What the islands currently show; outputs are redrawn when it changes.
-    view: View,
+    views: Views,
+    /// Connector name of the focused output, from niri; `None` treats every output as
+    /// focused.
+    focused_output: Option<String>,
+    clock: Option<String>,
     loop_handle: LoopHandle<'static, Shell>,
     /// Fires at the arbiter's next deadline (expiry or center→right move).
     timer: Option<RegistrationToken>,
+    sources: Option<dmsh_sources::Handle>,
+}
+
+/// Transient center activities show only on the focused output, so outputs can differ.
+#[derive(Clone, Default, PartialEq)]
+struct Views {
+    focused: View,
+    other: View,
 }
 
 /// The layer surface holding both islands on one output.
@@ -139,17 +172,24 @@ impl Shell {
         let now = Instant::now();
         let reply = match request {
             Request::Push(spec) => self.activities.push(spec, now).map(|()| Reply::Done),
-            Request::Dismiss { id } => Ok(Reply::Dismissed {
-                existed: self.activities.dismiss(&id),
-            }),
+            Request::Dismiss { id } => {
+                let existed = self.activities.dismiss(&id);
+                if existed {
+                    self.notify_removed(id, Removal::Dismissed);
+                }
+                Ok(Reply::Dismissed { existed })
+            }
             Request::Clear => {
-                self.activities.clear();
+                for id in self.activities.clear() {
+                    self.notify_removed(id, Removal::Dismissed);
+                }
                 Ok(Reply::Done)
             }
-            Request::State => Ok(Reply::State(StateDump {
-                view: self.activities.view(now),
+            Request::State => Ok(Reply::State(Box::new(StateDump {
+                view: self.views.focused.clone(),
+                focused_output: self.focused_output.clone(),
                 activities: self.activities.states(now),
-            })),
+            }))),
             Request::Version => Ok(Reply::Version {
                 version: env!("CARGO_PKG_VERSION").into(),
             }),
@@ -165,13 +205,20 @@ impl Shell {
     /// the next deadline. Nothing runs between deadlines, so idle CPU stays at zero.
     fn refresh(&mut self) {
         let now = Instant::now();
-        self.activities.expire(now);
-        let view = self.activities.view(now);
-        if view != self.view {
-            self.view = view;
-            for i in 0..self.islands.len() {
-                self.draw(i);
-            }
+        for id in self.activities.expire(now) {
+            self.notify_removed(id, Removal::Expired);
+        }
+        let view_for = |focused| View {
+            clock: self.clock.clone(),
+            ..self.activities.view_for(now, focused)
+        };
+        let views = Views {
+            focused: view_for(true),
+            other: view_for(false),
+        };
+        if views != self.views {
+            self.views = views;
+            self.redraw_all();
         }
 
         if let Some(token) = self.timer.take() {
@@ -188,6 +235,39 @@ impl Shell {
                 Ok(token) => self.timer = Some(token),
                 Err(e) => log::error!("arming timer: {e}"),
             }
+        }
+    }
+
+    fn on_source_event(&mut self, event: SourceEvent) {
+        match event {
+            SourceEvent::Request(request) => {
+                if let Response::Error(e) = self.handle(request) {
+                    log::warn!("source request failed: {e}");
+                }
+            }
+            SourceEvent::FocusedOutput(output) => {
+                if output != self.focused_output {
+                    self.focused_output = output;
+                    self.redraw_all();
+                }
+            }
+            SourceEvent::Clock(clock) => {
+                self.clock = Some(clock);
+                self.refresh();
+            }
+        }
+    }
+
+    /// Lets the owning source know (e.g. to emit `NotificationClosed`).
+    fn notify_removed(&self, id: String, reason: Removal) {
+        if let Some(sources) = &self.sources {
+            sources.send(SourceCommand::Removed { id, reason });
+        }
+    }
+
+    fn redraw_all(&mut self) {
+        for i in 0..self.islands.len() {
+            self.draw(i);
         }
     }
 
@@ -249,6 +329,19 @@ impl Shell {
     }
 
     fn draw(&mut self, index: usize) {
+        let name = self
+            .output_state
+            .info(&self.islands[index].output)
+            .and_then(|info| info.name);
+        let focused = match (&self.focused_output, &name) {
+            (Some(focused), Some(name)) => focused == name,
+            _ => true,
+        };
+        let view = if focused {
+            &self.views.focused
+        } else {
+            &self.views.other
+        };
         let island = &mut self.islands[index];
         let Some((width, height)) = island.size else {
             return;
@@ -257,8 +350,8 @@ impl Shell {
             return; // The configure for the new size will redraw.
         }
 
-        let layout = Layout::compute(width as f32, &self.theme, &self.view);
-        let scene = layout.scene(&self.theme, &self.view);
+        let layout = Layout::compute(width as f32, &self.theme, view);
+        let scene = layout.scene(&self.theme, view);
 
         // The canvas is only as tall as its content: the strip while collapsed, taller
         // while something floats over windows. The reserved strip never changes.

@@ -45,7 +45,7 @@ pub enum Reply {
     Dismissed {
         existed: bool,
     },
-    State(StateDump),
+    State(Box<StateDump>),
     Version {
         version: String,
     },
@@ -53,7 +53,11 @@ pub enum Reply {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StateDump {
+    /// The view on the focused output.
     pub view: View,
+    /// Connector name of the focused output (from niri), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_output: Option<String>,
     pub activities: Vec<ActivityState>,
 }
 
