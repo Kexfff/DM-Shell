@@ -44,8 +44,9 @@ pub struct Clip {
 }
 
 impl TextEngine {
-    pub fn new() -> Self {
-        let (db, family) = load_fonts();
+    /// `font` is tried first; then Inter, SF Pro Text, the system sans-serif.
+    pub fn new(font: Option<&str>) -> Self {
+        let (db, family) = load_fonts(font);
         log::debug!("UI font: {family} ({} faces)", db.len());
         Self {
             fonts: FontSystem::new_with_locale_and_db("en-US".into(), db),
@@ -195,10 +196,11 @@ fn font_weight(w: Weight) -> FontWeight {
     }
 }
 
-fn load_fonts() -> (fontdb::Database, String) {
+fn load_fonts(preferred: Option<&str>) -> (fontdb::Database, String) {
     let mut db = fontdb::Database::new();
-    let family = FAMILIES
-        .iter()
+    let family = preferred
+        .into_iter()
+        .chain(FAMILIES.iter().copied())
         .find(|f| fc_match(f, "%{family[0]}").is_some_and(|m| m.eq_ignore_ascii_case(f)))
         .map(|f| f.to_string())
         .or_else(|| fc_match("sans-serif", "%{family[0]}"))

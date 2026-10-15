@@ -104,7 +104,7 @@ pub trait Measure {
 }
 
 /// Visual constants. The default is the Apple-like solid black pill theme.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     /// Height reserved at the top of the output (layer-shell exclusive zone). Also the
     /// canvas height while nothing hangs below it.
@@ -129,6 +129,28 @@ pub struct Theme {
     pub highlight: Color,
     /// Icon color per priority, low to critical.
     pub priority_colors: [Color; 4],
+    pub motion: Motion,
+}
+
+/// Spring animation settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Motion {
+    /// `false` snaps instead of animating.
+    pub enabled: bool,
+    /// Seconds per oscillation.
+    pub response: f32,
+    /// 1.0 = no overshoot.
+    pub damping: f32,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            response: 0.42,
+            damping: 0.78,
+        }
+    }
 }
 
 impl Default for Theme {
@@ -159,6 +181,7 @@ impl Default for Theme {
                 Color::rgba(255, 159, 10, 255),
                 Color::rgba(255, 69, 58, 255),
             ],
+            motion: Motion::default(),
         }
     }
 }

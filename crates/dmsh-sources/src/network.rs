@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use futures_util::StreamExt;
 use zbus::{Connection, zvariant::OwnedObjectPath};
 
-use crate::{Emitter, status};
+use crate::Emitter;
 
 const ID: &str = "network";
 /// The primary connection flaps during roaming and reconnects; report only where it
@@ -56,7 +56,7 @@ pub async fn run(emitter: Emitter) -> Result<()> {
         let now = primary(&conn, &nm).await;
         if now != last {
             if let Some(title) = message(last.as_ref(), now.as_ref()) {
-                emitter.push(status(ID, icon(now.as_ref()), title));
+                emitter.push(emitter.status(ID, icon(now.as_ref()), title));
             }
             last = now;
         }

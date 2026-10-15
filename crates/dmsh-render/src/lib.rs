@@ -22,14 +22,15 @@ pub struct Renderer {
 
 impl Default for Renderer {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl Renderer {
-    pub fn new() -> Self {
+    /// `font` is the preferred UI font family (falls back to Inter, then sans-serif).
+    pub fn new(font: Option<&str>) -> Self {
         Self {
-            text: TextEngine::new(),
+            text: TextEngine::new(font),
             icons: icons::Icons::default(),
             images: images::Images::default(),
         }
@@ -209,7 +210,7 @@ mod tests {
         let scale = 1.75;
         let rect = Rect::new(100.0, 3.0, 200.0, 30.0);
         let mut pixmap = Pixmap::new(800, 70).unwrap();
-        let mut renderer = Renderer::new();
+        let mut renderer = Renderer::default();
         renderer.render(&pill_scene(rect), scale, &mut pixmap.as_mut());
         let cx = ((rect.x + rect.w / 2.0) * scale) as u32;
         let cy = ((rect.y + rect.h / 2.0) * scale) as u32;
@@ -219,7 +220,7 @@ mod tests {
 
     #[test]
     fn measures_text_and_ellipsizes() {
-        let mut r = Renderer::new();
+        let mut r = Renderer::default();
         let style = TextStyle::new(13.0, Weight::Semibold);
         let (short, h) = r.measure("Hi", style, 300.0, 1);
         let long_text = "wide ".repeat(100);

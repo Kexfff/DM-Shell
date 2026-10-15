@@ -2,12 +2,16 @@
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use dmsh_core::{
-    Activities, IslandKind, MenuEntryView, MenuView, Stage, Target, Theme, TrayIconView, View,
+    Activities, ActivitySpec, IslandKind, MenuEntryView, MenuView, Placement, Priority, Stage,
+    Target, Theme, TrayIconView, View,
     activity::Island,
+    config::{Config, ConfigError},
     ipc::{Event, Reply, Request, Response, StateDump},
 };
 use dmsh_render::{ImageSource, Renderer};
@@ -61,7 +65,15 @@ const BTN_MIDDLE: u32 = 0x112;
 /// Fractional scales arrive as multiples of 1/120.
 const SCALE_DENOM: u32 = 120;
 
-pub fn run() -> Result<()> {
+/// Activity used to report config errors in the island.
+const CONFIG_ERROR_ID: &str = "config-error";
+
+pub fn run(config_path: Option<PathBuf>) -> Result<()> {
+    let config_path = config_path.or_else(crate::config::default_path);
+    let (config, config_error) = match crate::config::load(config_path.as_deref()) {
+        Ok(config) => (config, None),
+        Err(e) => (Config::default(), Some(e)),
+    };
     let conn = Connection::connect_to_env().context("connecting to Wayland")?;
     let (globals, event_queue) = registry_queue_init(&conn)?;
     let qh = event_queue.handle();
@@ -86,7 +98,7 @@ pub fn run() -> Result<()> {
         pointer: None,
         cursor_shape,
         cursor_device: None,
-        renderer: Renderer::new(),
+        renderer: Renderer::new(config.font.as_deref()),
         qh: qh.clone(),
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -94,7 +106,11 @@ pub fn run() -> Result<()> {
         layer_shell,
         shm,
         fractional,
-        theme: Theme::default(),
+        theme: config.theme.clone(),
+        shared_config: Arc::new(RwLock::new(config.clone())),
+        config,
+        config_path: config_path.clone(),
+        reload_timer: None,
         islands: Vec::new(),
         activities: Activities::default(),
         views: Views::default(),
@@ -106,9 +122,15 @@ pub fn run() -> Result<()> {
         sources: None,
         subscribers: Vec::new(),
         tray: Vec::new(),
+        tray_items: Vec::new(),
         menu: None,
         menu_output: None,
     };
+    if let Some(path) = &config_path
+        && let Err(e) = crate::config::watch(&event_loop.handle(), path)
+    {
+        log::warn!("not watching {}: {e}", path.display());
+    }
 
     // Sources run on their own thread and report back through this channel.
     let (source_tx, source_rx) = channel::channel::<SourceEvent>();
@@ -120,11 +142,14 @@ pub fn run() -> Result<()> {
             }
         })
         .map_err(|e| anyhow::anyhow!("inserting sources channel: {e}"))?;
-    match dmsh_sources::spawn(move |event| {
+    match dmsh_sources::spawn(shell.shared_config.clone(), move |event| {
         let _ = source_tx.send(event);
     }) {
         Ok(handle) => shell.sources = Some(handle),
         Err(e) => log::error!("starting sources: {e}"),
+    }
+    if let Some(e) = config_error {
+        shell.report_config_error(&e);
     }
 
     WaylandSource::new(conn, event_queue)
@@ -135,6 +160,11 @@ pub fn run() -> Result<()> {
 }
 
 pub struct Shell {
+    config: Config,
+    /// The same config, shared with the sources thread.
+    shared_config: Arc<RwLock<Config>>,
+    config_path: Option<PathBuf>,
+    reload_timer: Option<RegistrationToken>,
     registry_state: RegistryState,
     seat_state: SeatState,
     pointer: Option<wl_pointer::WlPointer>,
@@ -168,6 +198,8 @@ pub struct Shell {
     /// IPC connections that asked for the event stream.
     subscribers: Vec<UnixStream>,
     tray: Vec<TrayIconView>,
+    /// As the tray source sent them, to re-register icons after a renderer change.
+    tray_items: Vec<tray::TrayItem>,
     menu: Option<OpenMenu>,
     /// Output whose tray was clicked last; a menu fetched for it opens there.
     menu_output: Option<usize>,
@@ -318,6 +350,7 @@ impl Shell {
                 focused_output: self.focused_output.clone(),
                 activities: self.activities.states(now),
             }))),
+            Request::Reload => self.reload().map(|()| Reply::Done),
             Request::Version => Ok(Reply::Version {
                 version: env!("CARGO_PKG_VERSION").into(),
             }),
@@ -426,6 +459,7 @@ impl Shell {
     /// Performs a click on an island.
     /// Registers tray icons with the renderer and shows them.
     fn set_tray(&mut self, items: Vec<tray::TrayItem>) {
+        self.tray_items = items.clone();
         self.tray = items
             .into_iter()
             .map(|item| {
@@ -463,6 +497,99 @@ impl Shell {
         self.renderer
             .retain_images(|k| keys.iter().any(|key| key == k));
         self.refresh();
+    }
+
+    /// Reloads the config shortly; repeated calls push the reload back.
+    pub fn schedule_reload(&mut self) {
+        if let Some(token) = self.reload_timer.take() {
+            self.loop_handle.remove(token);
+        }
+        let timer = Timer::from_duration(crate::config::RELOAD_DELAY);
+        let token = self.loop_handle.insert_source(timer, |_, _, shell| {
+            shell.reload_timer = None;
+            let _ = shell.reload();
+            TimeoutAction::Drop
+        });
+        self.reload_timer = token.ok();
+    }
+
+    /// Re-reads the config. On error the current config stays and the error is shown.
+    fn reload(&mut self) -> Result<(), String> {
+        match crate::config::load(self.config_path.as_deref()) {
+            Ok(config) => {
+                log::info!("config reloaded");
+                self.apply_config(config);
+                if self.activities.dismiss(CONFIG_ERROR_ID) {
+                    self.refresh();
+                }
+                Ok(())
+            }
+            Err(e) => {
+                self.report_config_error(&e);
+                Err(format!("config: {e}"))
+            }
+        }
+    }
+
+    fn report_config_error(&mut self, e: &ConfigError) {
+        log::error!("config: {e}");
+        let spec = ActivitySpec {
+            body: Some(e.to_string()),
+            icon: Some("alert".into()),
+            placement: Placement::Center,
+            priority: Priority::High,
+            ttl_ms: Some(10_000),
+            ..ActivitySpec::new(CONFIG_ERROR_ID, "Config error")
+        };
+        if let Response::Error(e) = self.handle(Request::Push(spec)) {
+            log::warn!("showing config error: {e}");
+        }
+    }
+
+    fn apply_config(&mut self, config: Config) {
+        let font_changed = config.font != self.config.font;
+        let strip_changed = config.theme.strip_height != self.theme.strip_height;
+        self.theme = config.theme.clone();
+        *self
+            .shared_config
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = config.clone();
+        self.config = config;
+        if let Some(sources) = &self.sources {
+            sources.config_changed();
+        }
+        if font_changed {
+            self.renderer = Renderer::new(self.config.font.as_deref());
+            self.set_tray(self.tray_items.clone());
+        }
+        if strip_changed {
+            for island in &self.islands {
+                island
+                    .layer
+                    .set_exclusive_zone(self.theme.strip_height as i32);
+            }
+        }
+        // Outputs that are no longer wanted go away; newly wanted ones get islands.
+        let wanted = |shell: &Self, output: &wl_output::WlOutput| {
+            let name = shell.output_state.info(output).and_then(|i| i.name);
+            shell.config.outputs.wants(name.as_deref())
+        };
+        let keep: Vec<bool> = self
+            .islands
+            .iter()
+            .map(|i| wanted(self, &i.output))
+            .collect();
+        let mut keep = keep.into_iter();
+        self.islands.retain(|_| keep.next().unwrap_or(true));
+        self.menu = None;
+        for output in self.output_state.outputs() {
+            let present = self.islands.iter().any(|i| i.output == output);
+            if !present && wanted(self, &output) {
+                let qh = self.qh.clone();
+                self.add_output(&qh, output);
+            }
+        }
+        self.update_all();
     }
 
     fn tray_command(&self, command: tray::Command) {
@@ -598,6 +725,14 @@ impl Shell {
     }
 
     fn add_output(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        let name = self.output_state.info(&output).and_then(|i| i.name);
+        if !self.config.outputs.wants(name.as_deref()) {
+            log::info!(
+                "no islands on {}",
+                name.as_deref().unwrap_or("unnamed output")
+            );
+            return;
+        }
         let surface = self.compositor.create_surface(qh);
         let scaling = self.fractional.as_ref().map(|(manager, viewporter)| {
             let fractional =

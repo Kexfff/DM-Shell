@@ -1,0 +1,66 @@
+// dmsh config: ~/.config/dmsh/config.kdl
+//
+// Every value below is the default; delete what you don't change. The file is reloaded
+// when saved, and mistakes show up in the island (also: `dmsh config check`).
+// Both KDL v2 (`#true`) and v1 (`true`, niri's syntax) work.
+
+theme {
+    // Leave unset to use Inter if installed, else the system sans-serif.
+    // font "Inter"
+
+    pill-color "#000000"
+    text-color "#f5f5f7"
+    secondary-text-color "#98989d"
+    // Icon colors by priority.
+    accent-colors low="#8e8e93" normal="#f5f5f7" high="#ff9f0a" critical="#ff453a"
+
+    // Space reserved at the top of each output; windows tile below it.
+    reserved-height 36
+    pill-height 30
+    // Corner radius of expanded islands (collapsed pills are fully round).
+    corner-radius 26
+
+    center-idle-width 120
+    center-min-width 160
+    center-expanded-width 400
+    right-expanded-width 340
+    right-margin 8
+}
+
+clock {
+    // strftime formats, e.g. "%I:%M %p" for a 12-hour clock.
+    format "%H:%M"
+    date-format "%A, %-d %B"
+}
+
+animation {
+    // Seconds per spring oscillation, and damping (1.0 = no overshoot).
+    response 0.42
+    damping 0.78
+    // off
+}
+
+outputs {
+    // Show islands only on these outputs, or on all except these.
+    // only "eDP-1"
+    // except "HDMI-A-1"
+}
+
+// Which event sources run. Changing these takes effect after restarting dmsh.
+sources {
+    notifications true
+    tray true
+    media true
+    volume true
+    brightness true
+    power true
+    network true
+    keyboard-layout true
+    screencast true
+}
+
+timing {
+    osd "1500ms"
+    status "4s"
+    notification-center "2s"
+}

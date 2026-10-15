@@ -14,6 +14,8 @@ use dmsh_render::{
 const FRAME: Duration = Duration::from_micros(8_333);
 
 pub struct Options {
+    /// Theme and font come from here (defaults unless `--config` is given).
+    pub config: dmsh_core::config::Config,
     pub output: String,
     pub width: f32,
     pub scale: f32,
@@ -32,8 +34,8 @@ pub struct Options {
 }
 
 pub fn render(opts: Options) -> Result<()> {
-    let theme = Theme::default();
-    let mut renderer = Renderer::new();
+    let theme = opts.config.theme.clone();
+    let mut renderer = Renderer::new(opts.config.font.as_deref());
     let mut pending = load_activities(opts.activities.as_deref())?;
     let background = opts.background.as_deref().map(parse_color).transpose()?;
 

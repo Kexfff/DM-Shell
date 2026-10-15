@@ -14,8 +14,8 @@ use std::f32::consts::TAU;
 
 use crate::activity::View;
 use crate::layout::{
-    Content, Draw, Group, Hit, Measure, Rect, RoundRect, Scene, Target, Theme, center_content,
-    right_content,
+    Content, Draw, Group, Hit, Measure, Motion, Rect, RoundRect, Scene, Target, Theme,
+    center_content, right_content,
 };
 
 /// Spring constants derived from a response time (seconds per oscillation) and a damping
@@ -39,8 +39,8 @@ impl Params {
     }
 }
 
-fn morph() -> Params {
-    Params::new(0.42, 0.78, 0.1)
+fn morph(m: Motion) -> Params {
+    Params::new(m.response, m.damping, 0.1)
 }
 
 fn fade() -> Params {
@@ -140,8 +140,14 @@ impl RectSpring {
         Rect::new(self.x.target, self.y.target, self.w.target, self.h.target)
     }
 
-    fn step(&mut self, dt: f32) {
-        self.springs().into_iter().for_each(|s| s.step(dt, morph()));
+    fn step(&mut self, dt: f32, motion: Motion) {
+        self.springs()
+            .into_iter()
+            .for_each(|s| s.step(dt, morph(motion)));
+    }
+
+    fn finish(&mut self) {
+        self.springs().into_iter().for_each(|s| s.snap(s.target));
     }
 
     fn settled(&self) -> bool {
@@ -182,8 +188,17 @@ impl Island {
         }
     }
 
-    fn step(&mut self, dt: f32) {
-        self.rect.step(dt);
+    /// Jumps to the end of every animation (motion turned off).
+    fn finish(&mut self) {
+        self.rect.finish();
+        self.alpha.snap(self.alpha.target);
+        if self.alpha.value == 0.0 {
+            self.content = None;
+        }
+    }
+
+    fn step(&mut self, dt: f32, motion: Motion) {
+        self.rect.step(dt, motion);
         self.alpha.step(dt, fade());
         if self.alpha.settled() && self.alpha.value == 0.0 {
             self.content = None;
@@ -220,6 +235,7 @@ pub struct Stage {
     center_id: Option<String>,
     /// Pointer position in surface coordinates, for hover highlights.
     pointer: Option<(f32, f32)>,
+    motion: Motion,
 }
 
 impl Stage {
@@ -246,6 +262,7 @@ impl Stage {
             None => hidden_right(width, theme),
         };
         let center_id = view.center.as_ref().map(|a| a.id.clone());
+        self.motion = theme.motion;
 
         let (Some(center), Some(right)) = (&mut self.center, &mut self.right) else {
             return self.snap(
@@ -295,6 +312,10 @@ impl Stage {
         center.set(center_target, Some(center_c));
         right.set(right_target, right_c);
         self.center_id = center_id;
+        if !self.motion.enabled {
+            self.islands_mut().for_each(Island::finish);
+            self.ghost = None;
+        }
     }
 
     fn snap(
@@ -314,9 +335,10 @@ impl Stage {
     }
 
     pub fn step(&mut self, dt: f32) {
-        self.islands_mut().for_each(|i| i.step(dt));
+        let motion = self.motion;
+        self.islands_mut().for_each(|i| i.step(dt, motion));
         if let Some(ghost) = &mut self.ghost {
-            ghost.rect.step(dt);
+            ghost.rect.step(dt, motion);
             ghost.alpha.step(dt, ghost_fade());
             if ghost.rect.settled() {
                 self.ghost = None;
@@ -537,7 +559,7 @@ mod tests {
         s.target = 100.0;
         let mut peak = 0.0_f32;
         for _ in 0..240 {
-            s.step(DT, morph());
+            s.step(DT, morph(Motion::default()));
             peak = peak.max(s.value);
         }
         assert!(s.settled() && s.value == 100.0);
@@ -548,7 +570,7 @@ mod tests {
     fn spring_is_stable_with_long_frames() {
         let mut s = Spring::new(0.0);
         s.target = 1.0;
-        s.step(0.5, morph());
+        s.step(0.5, morph(Motion::default()));
         assert!(s.value.is_finite() && (s.value - 1.0).abs() < 0.2);
     }
 
@@ -668,6 +690,23 @@ mod tests {
             .count();
         assert_eq!(highlights, 1);
         assert_eq!(stage.target_at(5.0, 5.0), None);
+    }
+
+    #[test]
+    fn motion_off_snaps() {
+        let theme = Theme {
+            motion: Motion {
+                enabled: false,
+                ..Motion::default()
+            },
+            ..Theme::default()
+        };
+        let mut stage = Stage::default();
+        stage.update(W, &view(None, &[]), None, &theme, &mut FakeMeasure);
+        let n = activity("n", None);
+        stage.update(W, &view(Some(n), &[]), None, &theme, &mut FakeMeasure);
+        assert!(!stage.animating());
+        assert_eq!(stage.center.as_ref().unwrap().alpha.value, 1.0);
     }
 
     #[test]

@@ -37,6 +37,8 @@ pub enum Request {
     /// What the islands show now, plus every live activity.
     State,
     Version,
+    /// Re-read the config file; replies with an error if it is invalid.
+    Reload,
     /// Keep this connection open and stream [`Event`]s, one JSON object per line.
     Subscribe,
 }

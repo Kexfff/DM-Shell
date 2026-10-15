@@ -163,6 +163,24 @@ the rest keep running. Nothing polls: every source is event-driven.
    Fixture entries are activity specs; an `at_ms` field delays one. The layout and
    animation code in `dmsh-core` is unit-tested with a fake text measurer.
 
+## Config
+
+`~/.config/dmsh/config.kdl` (or `--config <path>`). `dmsh config default` prints the
+documented defaults (`crates/dmsh-core/src/default-config.kdl`, kept in sync with the code
+by a test); `dmsh config check` validates; `dmsh config path` locates it.
+
+- Sections: `theme` (colors, font, sizes), `clock` (strftime formats), `animation`
+  (spring response/damping, `off`), `outputs` (`only` / `except`), `sources` (on/off),
+  `timing` (OSD, status, notification-in-center durations).
+- Parsing is strict: unknown sections/options and bad values are errors with line
+  numbers. KDL v2 and v1 (niri's syntax) both parse.
+- Saving the file reloads it (inotify on the directory, debounced 150 ms; also
+  `dmsh reload`). An invalid file keeps the previous config and shows a "Config error"
+  activity in the center with the message.
+- Applied live: theme, font, animation, outputs, timings, clock formats. Turning sources
+  on or off takes effect on restart.
+- `dmsh render --config <path>` renders with a config's theme, for checking it headless.
+
 ## Phases
 
 0. **Skeleton** — layer surface per output, two static pills, input region, fractional
@@ -176,7 +194,7 @@ the rest keep running. Nothing polls: every source is event-driven.
 4. **Expanded views**: clickable buttons with hover highlights, notification actions
    (`ActionInvoked`, `resident`), right-island list with per-row close and "Clear all",
    media controls (previous / play-pause / next over MPRIS), system tray with menus. ✓
-5. Config (KDL), niri keybind integration (e.g. `dmsh focus`).
+5. **Config (KDL)** with live reload. ✓ niri keybind integration: next.
 
 ## Open questions
 

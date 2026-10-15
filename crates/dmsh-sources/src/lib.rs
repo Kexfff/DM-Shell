@@ -17,12 +17,12 @@ pub mod tray;
 mod volume;
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
 pub use dmsh_core::ipc::Removal;
-use dmsh_core::{ActivitySpec, Placement, ipc::Request};
-use tokio::sync::mpsc;
+use dmsh_core::{ActivitySpec, Placement, config::Config, ipc::Request};
+use tokio::sync::{Notify, mpsc};
 
 /// What sources tell the shell.
 #[derive(Debug)]
@@ -61,18 +61,33 @@ pub enum Command {
 /// Lets the shell send [`Command`]s to the sources thread.
 pub struct Handle {
     commands: mpsc::UnboundedSender<Command>,
+    config_changed: Arc<Notify>,
 }
 
 impl Handle {
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
+
+    /// Call after writing a new config into the shared lock; sources re-read it.
+    pub fn config_changed(&self) {
+        self.config_changed.notify_waiters();
+    }
 }
 
-/// Starts all sources on a background thread; `emit` is called from that thread.
-pub fn spawn(emit: impl Fn(Event) + Send + Sync + 'static) -> std::io::Result<Handle> {
+/// Starts the enabled sources on a background thread; `emit` is called from that thread.
+/// Sources read timings and formats from `config` whenever they use them.
+pub fn spawn(
+    config: Arc<RwLock<Config>>,
+    emit: impl Fn(Event) + Send + Sync + 'static,
+) -> std::io::Result<Handle> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let emitter = Emitter(Arc::new(emit));
+    let config_changed = Arc::new(Notify::new());
+    let emitter = Emitter {
+        emit: Arc::new(emit),
+        config,
+        config_changed: config_changed.clone(),
+    };
     std::thread::Builder::new()
         .name("dmsh-sources".into())
         .spawn(move || {
@@ -84,7 +99,10 @@ pub fn spawn(emit: impl Fn(Event) + Send + Sync + 'static) -> std::io::Result<Ha
                 Err(e) => log::error!("starting sources runtime: {e}"),
             }
         })?;
-    Ok(Handle { commands: tx })
+    Ok(Handle {
+        commands: tx,
+        config_changed,
+    })
 }
 
 async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
@@ -92,18 +110,33 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     let (media_tx, media_rx) = mpsc::unbounded_channel();
     let (tray_tx, tray_rx) = mpsc::unbounded_channel();
 
+    let enabled = emitter.config().sources.clone();
     tokio::spawn(supervise("clock", clock::run(emitter.clone())));
     tokio::spawn(supervise("niri", niri::run(emitter.clone())));
-    tokio::spawn(supervise("volume", volume::run(emitter.clone())));
-    tokio::spawn(supervise("brightness", brightness::run(emitter.clone())));
-    tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));
-    tokio::spawn(supervise("power", power::run(emitter.clone())));
-    tokio::spawn(supervise("network", network::run(emitter.clone())));
-    tokio::spawn(supervise("tray", tray::run(emitter.clone(), tray_rx)));
-    tokio::spawn(supervise(
-        "notifications",
-        notifications::run(emitter, notifications_rx),
-    ));
+    if enabled.volume {
+        tokio::spawn(supervise("volume", volume::run(emitter.clone())));
+    }
+    if enabled.brightness {
+        tokio::spawn(supervise("brightness", brightness::run(emitter.clone())));
+    }
+    if enabled.media {
+        tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));
+    }
+    if enabled.power {
+        tokio::spawn(supervise("power", power::run(emitter.clone())));
+    }
+    if enabled.network {
+        tokio::spawn(supervise("network", network::run(emitter.clone())));
+    }
+    if enabled.tray {
+        tokio::spawn(supervise("tray", tray::run(emitter.clone(), tray_rx)));
+    }
+    if enabled.notifications {
+        tokio::spawn(supervise(
+            "notifications",
+            notifications::run(emitter, notifications_rx),
+        ));
+    }
 
     // Route each command to the source that owns the activity.
     while let Some(command) = commands.recv().await {
@@ -134,13 +167,17 @@ async fn supervise(name: &str, source: impl Future<Output = anyhow::Result<()>>)
     }
 }
 
-/// Sends events to the shell.
+/// Sends events to the shell and gives sources the current config.
 #[derive(Clone)]
-struct Emitter(Arc<dyn Fn(Event) + Send + Sync>);
+struct Emitter {
+    emit: Arc<dyn Fn(Event) + Send + Sync>,
+    config: Arc<RwLock<Config>>,
+    config_changed: Arc<Notify>,
+}
 
 impl Emitter {
     fn emit(&self, event: Event) {
-        (self.0)(event)
+        (self.emit)(event)
     }
 
     fn push(&self, spec: ActivitySpec) {
@@ -150,27 +187,42 @@ impl Emitter {
     fn dismiss(&self, id: &str) {
         self.emit(Event::Request(Request::Dismiss { id: id.into() }));
     }
-}
 
-/// A short center overlay (volume, brightness, keyboard layout).
-fn osd(id: &str, icon: &str, title: impl Into<String>, progress: Option<f32>) -> ActivitySpec {
-    ActivitySpec {
-        progress,
-        icon: Some(icon.into()),
-        placement: Placement::Center,
-        ttl_ms: Some(1500),
-        ..ActivitySpec::new(id, title)
+    fn config(&self) -> RwLockReadGuard<'_, Config> {
+        self.config.read().unwrap_or_else(|e| e.into_inner())
     }
-}
 
-/// A short right-island status message (Wi-Fi, charger).
-fn status(id: &str, icon: &str, title: impl Into<String>) -> ActivitySpec {
-    ActivitySpec {
-        icon: Some(icon.into()),
-        placement: Placement::Right,
-        priority: dmsh_core::Priority::Low,
-        ttl_ms: Some(4000),
-        ..ActivitySpec::new(id, title)
+    /// Resolves when the shell reloads the config.
+    async fn config_changed(&self) {
+        self.config_changed.notified().await
+    }
+
+    /// A short center overlay (volume, brightness, keyboard layout).
+    fn osd(
+        &self,
+        id: &str,
+        icon: &str,
+        title: impl Into<String>,
+        progress: Option<f32>,
+    ) -> ActivitySpec {
+        ActivitySpec {
+            progress,
+            icon: Some(icon.into()),
+            placement: Placement::Center,
+            ttl_ms: Some(self.config().timing.osd.as_millis() as u64),
+            ..ActivitySpec::new(id, title)
+        }
+    }
+
+    /// A short right-island status message (Wi-Fi, charger).
+    fn status(&self, id: &str, icon: &str, title: impl Into<String>) -> ActivitySpec {
+        ActivitySpec {
+            icon: Some(icon.into()),
+            placement: Placement::Right,
+            priority: dmsh_core::Priority::Low,
+            ttl_ms: Some(self.config().timing.status.as_millis() as u64),
+            ..ActivitySpec::new(id, title)
+        }
     }
 }
 

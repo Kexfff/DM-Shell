@@ -6,7 +6,7 @@ use dmsh_core::{ActivitySpec, Placement, Priority};
 use futures_util::StreamExt;
 use zbus::Connection;
 
-use crate::{Emitter, status};
+use crate::Emitter;
 
 const CHARGER_ID: &str = "power";
 const LOW_ID: &str = "battery-low";
@@ -77,7 +77,7 @@ pub async fn run(emitter: Emitter) -> Result<()> {
                 };
                 emitter.push(ActivitySpec {
                     progress: Some((percent / 100.0) as f32),
-                    ..status(CHARGER_ID, icon, title)
+                    ..emitter.status(CHARGER_ID, icon, title)
                 });
             }
             state = new_state;

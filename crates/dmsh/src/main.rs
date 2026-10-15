@@ -1,10 +1,13 @@
+mod config;
 mod headless;
 mod ipc;
 mod shell;
 
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use dmsh_core::{
     Action, ActivitySpec, IslandKind, Placement, Priority,
@@ -19,6 +22,9 @@ use dmsh_core::{
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
+    /// Config file (default: $XDG_CONFIG_HOME/dmsh/config.kdl).
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -43,6 +49,11 @@ enum Command {
     Schema,
     /// List the built-in icon names.
     Icons,
+    /// Check, print or locate the config file.
+    #[command(subcommand)]
+    Config(ConfigCommand),
+    /// Make the running shell re-read its config (it also does this on save).
+    Reload,
     /// Draw the islands headlessly to a PNG, simulating animations on a fake clock.
     Render {
         #[arg(short, long, default_value = "dmsh.png")]
@@ -82,6 +93,16 @@ enum Command {
         #[arg(long, value_parser = parse_crop)]
         pointer: Option<(f32, f32)>,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Parse the config and report the first error with its line.
+    Check,
+    /// Print the documented default config.
+    Default,
+    /// Print where the config file is read from.
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -142,8 +163,34 @@ fn main() -> Result<()> {
     )
     .init();
 
-    match Cli::parse().command.unwrap_or(Command::Run) {
-        Command::Run => shell::run(),
+    let cli = Cli::parse();
+    let config_path = cli.config.clone().or_else(config::default_path);
+    match cli.command.unwrap_or(Command::Run) {
+        Command::Run => shell::run(cli.config),
+        Command::Config(ConfigCommand::Check) => {
+            let path = config_path.context("no config path ($HOME unset)")?;
+            if !path.exists() {
+                println!("{}: not found; using defaults", path.display());
+                return Ok(());
+            }
+            match config::load(Some(&path)) {
+                Ok(_) => {
+                    println!("{}: ok", path.display());
+                    Ok(())
+                }
+                Err(e) => bail!("{}: {e}", path.display()),
+            }
+        }
+        Command::Config(ConfigCommand::Default) => {
+            print!("{}", dmsh_core::config::DEFAULT_CONFIG);
+            Ok(())
+        }
+        Command::Config(ConfigCommand::Path) => {
+            let path = config_path.context("no config path ($HOME unset)")?;
+            println!("{}", path.display());
+            Ok(())
+        }
+        Command::Reload => call(&Request::Reload).map(|_| ()),
         Command::Activity(cmd) => activity(cmd),
         Command::State => {
             let Reply::State(state) = call(&Request::State)? else {
@@ -186,6 +233,11 @@ fn main() -> Result<()> {
             crop,
             pointer,
         } => headless::render(headless::Options {
+            config: match &cli.config {
+                Some(path) => config::load(Some(path))
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
+                None => dmsh_core::config::Config::default(),
+            },
             output,
             width,
             scale,
@@ -283,21 +335,7 @@ fn call(request: &Request) -> Result<Reply> {
 
 /// Parses `1500ms`, `2s` or `5m`.
 fn parse_duration(s: &str) -> Result<Duration, String> {
-    let split = s
-        .find(|c: char| !c.is_ascii_digit() && c != '.')
-        .unwrap_or(s.len());
-    let (number, unit) = s.split_at(split);
-    let n: f64 = number
-        .parse()
-        .map_err(|_| format!("invalid duration `{s}`"))?;
-    let secs = match unit {
-        "ms" => n / 1000.0,
-        "s" => n,
-        "m" => n * 60.0,
-        "" => return Err(format!("`{s}` needs a unit: ms, s or m")),
-        _ => return Err(format!("unknown unit `{unit}` (use ms, s or m)")),
-    };
-    Duration::try_from_secs_f64(secs).map_err(|e| e.to_string())
+    dmsh_core::config::parse_duration(s)
 }
 
 /// Parses `key:Label`, or `key` alone (label = key).

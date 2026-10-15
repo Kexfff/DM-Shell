@@ -8,7 +8,7 @@ use niri_ipc::{Event as NiriEvent, Request, socket::SOCKET_PATH_ENV};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use crate::{Emitter, Event, osd};
+use crate::{Emitter, Event};
 
 const LAYOUT_ID: &str = "keyboard-layout";
 const CAST_ID: &str = "screencast";
@@ -69,8 +69,11 @@ impl State {
                 self.layouts = keyboard_layouts.names;
             }
             NiriEvent::KeyboardLayoutSwitched { idx } => {
+                if !emitter.config().sources.keyboard_layout {
+                    return;
+                }
                 if let Some(name) = self.layouts.get(usize::from(idx)) {
-                    emitter.push(osd(LAYOUT_ID, "keyboard", name.clone(), None));
+                    emitter.push(emitter.osd(LAYOUT_ID, "keyboard", name.clone(), None));
                 }
             }
             NiriEvent::CastsChanged { casts } => {
@@ -105,7 +108,7 @@ impl State {
     }
 
     fn update_casts(&self, emitter: &Emitter) {
-        if self.active_casts.is_empty() {
+        if self.active_casts.is_empty() || !emitter.config().sources.screencast {
             emitter.dismiss(CAST_ID);
         } else {
             emitter.push(ActivitySpec {

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 
-use crate::{Emitter, osd};
+use crate::Emitter;
 
 const ID: &str = "brightness";
 const BACKLIGHT_DIR: &str = "/sys/class/backlight";
@@ -27,7 +27,7 @@ pub async fn run(emitter: Emitter) -> Result<()> {
         let now = read_number(&path)?;
         if now != last {
             last = now;
-            emitter.push(osd(
+            emitter.push(emitter.osd(
                 ID,
                 "brightness",
                 "Brightness",

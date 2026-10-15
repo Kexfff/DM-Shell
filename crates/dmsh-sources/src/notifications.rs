@@ -85,6 +85,7 @@ impl Server {
         let urgency = hint("urgency").and_then(|v| u8::try_from(v).ok());
         let resident = hint("resident").and_then(|v| bool::try_from(v).ok());
         let mut spec = spec(id, &app_name, summary, body, urgency, expire_timeout);
+        spec.center_ms = self.emitter.config().timing.notification_center.as_millis() as u64;
         spec.actions = parse_actions(&actions);
         spec.keep_on_action = resident.unwrap_or(false);
         self.emitter.push(spec);

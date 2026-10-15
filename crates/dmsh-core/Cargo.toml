@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+kdl = { version = "6.7.1", default-features = false, features = ["span", "v1-fallback"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 

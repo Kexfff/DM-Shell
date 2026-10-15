@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::{Emitter, SETTLE, osd};
+use crate::{Emitter, SETTLE};
 
 const ID: &str = "volume";
 
@@ -52,7 +52,7 @@ pub async fn run(emitter: Emitter) -> Result<()> {
             } else {
                 ("volume", "Volume")
             };
-            emitter.push(osd(ID, icon, title, Some(now.percent as f32 / 100.0)));
+            emitter.push(emitter.osd(ID, icon, title, Some(now.percent as f32 / 100.0)));
         }
     }
     anyhow::bail!("`pactl subscribe` exited")
