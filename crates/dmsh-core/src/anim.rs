@@ -236,6 +236,9 @@ pub struct Stage {
     /// Pointer position in surface coordinates, for hover highlights.
     pointer: Option<(f32, f32)>,
     motion: Motion,
+    /// The island being navigated with the keyboard, and the selected target in it.
+    keyboard: Option<IslandKind>,
+    selection: usize,
 }
 
 impl Stage {
@@ -395,7 +398,67 @@ impl Stage {
         self.hit_at(x, y).map(|(_, hit)| hit.target)
     }
 
+    /// Starts (or stops) keyboard navigation of an island, selecting its first target.
+    pub fn set_keyboard(&mut self, island: Option<IslandKind>) {
+        self.keyboard = island;
+        self.selection = 0;
+    }
+
+    pub fn keyboard(&self) -> Option<IslandKind> {
+        self.keyboard
+    }
+
+    /// Moves the keyboard selection, wrapping around; returns whether it changed.
+    pub fn move_selection(&mut self, delta: i32) -> bool {
+        let n = self.keyboard_hits().len();
+        if n == 0 {
+            return false;
+        }
+        let current = self.selection.min(n - 1);
+        self.selection = (current as i32 + delta).rem_euclid(n as i32) as usize;
+        self.selection != current
+    }
+
+    /// What Enter would do.
+    pub fn selected_target(&self) -> Option<Target> {
+        self.selected_hit().map(|(_, hit)| hit.target)
+    }
+
+    fn selected_hit(&self) -> Option<(usize, Hit)> {
+        let hits = self.keyboard_hits();
+        let i = self.selection.min(hits.len().checked_sub(1)?);
+        hits.into_iter().nth(i)
+    }
+
+    /// Keyboard-reachable hits of the navigated island, in surface coordinates.
+    fn keyboard_hits(&self) -> Vec<(usize, Hit)> {
+        let index = match self.keyboard {
+            Some(IslandKind::Right) => 0,
+            Some(IslandKind::Center) => 1,
+            None => return Vec::new(),
+        };
+        let Some(island) = self.islands().nth(index) else {
+            return Vec::new();
+        };
+        let Some(content) = &island.content else {
+            return Vec::new();
+        };
+        let (dx, dy) = content_offset(island.rect.current(), content);
+        content
+            .hits
+            .iter()
+            .filter(|h| h.keyboard)
+            .map(|h| {
+                let rect = h.rect.translate(dx, dy);
+                (index, Hit { rect, ..h.clone() })
+            })
+            .collect()
+    }
+
     fn hovered_hit(&self) -> Option<(usize, Hit)> {
+        if self.keyboard.is_some() {
+            return self.selected_hit().filter(|(_, h)| h.highlight);
+        }
         let (x, y) = self.pointer?;
         self.hit_at(x, y).filter(|(_, h)| h.highlight)
     }
@@ -690,6 +753,49 @@ mod tests {
             .count();
         assert_eq!(highlights, 1);
         assert_eq!(stage.target_at(5.0, 5.0), None);
+    }
+
+    #[test]
+    fn keyboard_selection_wraps_and_skips_close_buttons() {
+        let theme = Theme::default();
+        let mut stage = Stage::default();
+        let items = [activity("a", None), activity("b", None)];
+        let v = view(None, &items);
+        update(&mut stage, &v, Some(IslandKind::Right));
+        stage.set_keyboard(Some(IslandKind::Right));
+        // Rows a, b, then "Clear all"; close buttons are skipped.
+        assert_eq!(
+            stage.selected_target(),
+            Some(Target::Dismiss { id: "a".into() })
+        );
+        assert!(stage.move_selection(1));
+        assert_eq!(
+            stage.selected_target(),
+            Some(Target::Dismiss { id: "b".into() })
+        );
+        stage.move_selection(1);
+        assert_eq!(stage.selected_target(), Some(Target::ClearRight));
+        stage.move_selection(1);
+        assert_eq!(
+            stage.selected_target(),
+            Some(Target::Dismiss { id: "a".into() }),
+            "wraps"
+        );
+        stage.move_selection(-1);
+        assert_eq!(
+            stage.selected_target(),
+            Some(Target::ClearRight),
+            "wraps back"
+        );
+        let highlighted = stage
+            .scene(&theme)
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .any(|d| matches!(d, Draw::Rect(r) if r.color == theme.highlight));
+        assert!(highlighted, "selection is highlighted without a pointer");
+        stage.set_keyboard(None);
+        assert_eq!(stage.selected_target(), None);
     }
 
     #[test]

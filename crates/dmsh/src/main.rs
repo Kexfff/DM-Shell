@@ -54,6 +54,14 @@ enum Command {
     Config(ConfigCommand),
     /// Make the running shell re-read its config (it also does this on save).
     Reload,
+    /// Open an island with keyboard focus, or close it (for compositor keybinds).
+    Toggle {
+        /// center or right.
+        #[arg(value_parser = parse_enum::<Island>)]
+        island: Island,
+    },
+    /// Print a snippet for niri's config: autostart and keybinds.
+    Niri,
     /// Draw the islands headlessly to a PNG, simulating animations on a fake clock.
     Render {
         #[arg(short, long, default_value = "dmsh.png")]
@@ -157,6 +165,22 @@ enum ActivityCommand {
     },
 }
 
+/// Printed by `dmsh niri`.
+const NIRI_SNIPPET: &str = r#"// dmsh for niri: add these to ~/.config/niri/config.kdl
+// (merge the binds into your existing `binds {}` block; pick keys that are free).
+
+spawn-at-startup "dmsh"
+
+binds {
+    // Notification list and tray, keyboard-navigable: arrows/j/k, Enter, Delete, m (tray
+    // menu), Esc.
+    Mod+N hotkey-overlay-title="dmsh: notifications" { spawn "dmsh" "toggle" "right"; }
+    Mod+Ctrl+N hotkey-overlay-title="dmsh: clear notifications" { spawn "dmsh" "activity" "clear" "--right"; }
+    // The center island: media controls, an activity's buttons, or the date.
+    Mod+I hotkey-overlay-title="dmsh: center island" { spawn "dmsh" "toggle" "center"; }
+}
+"#;
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn"),
@@ -191,6 +215,11 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Reload => call(&Request::Reload).map(|_| ()),
+        Command::Toggle { island } => call(&Request::Toggle { island }).map(|_| ()),
+        Command::Niri => {
+            print!("{NIRI_SNIPPET}");
+            Ok(())
+        }
         Command::Activity(cmd) => activity(cmd),
         Command::State => {
             let Reply::State(state) = call(&Request::State)? else {

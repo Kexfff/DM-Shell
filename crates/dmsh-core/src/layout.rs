@@ -311,6 +311,8 @@ pub struct Hit {
     pub target: Target,
     /// Show a hover highlight (buttons, list rows), not for whole-island clicks.
     pub highlight: bool,
+    /// Reachable with keyboard navigation (small duplicates like close buttons aren't).
+    pub keyboard: bool,
 }
 
 /// What an island shows, laid out at its natural size with items relative to (0, 0).
@@ -576,6 +578,7 @@ fn right_compact(
                 id: item.id.clone(),
             },
             highlight: true,
+            keyboard: true,
         });
         x += slot;
     }
@@ -651,6 +654,7 @@ fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
             rect: Rect::new(6.0, y, w - 12.0, row),
             target: Target::MenuBack,
             highlight: true,
+            keyboard: true,
         });
         y += row;
     }
@@ -687,6 +691,7 @@ fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
                 rect: Rect::new(6.0, y, w - 12.0, row),
                 target: Target::MenuItem { id: entry.id },
                 highlight: true,
+                keyboard: true,
             });
         }
         y += row;
@@ -728,6 +733,7 @@ fn right_list(
                     id: item.id.clone(),
                 },
                 highlight: true,
+                keyboard: true,
             });
         }
         y += slot + 4.0;
@@ -770,6 +776,7 @@ fn right_list(
             rect: close_rect,
             target: Target::Dismiss { id: a.id.clone() },
             highlight: true,
+            keyboard: false,
         });
         // Clicking a row opens it (its default action) or, without one, dismisses it.
         let target = if a.has_action(DEFAULT_ACTION) {
@@ -784,6 +791,7 @@ fn right_list(
             rect: row,
             target,
             highlight: true,
+            keyboard: true,
         });
         y += ROW_HEIGHT;
     }
@@ -803,6 +811,7 @@ fn right_list(
             rect: button,
             target: Target::ClearRight,
             highlight: true,
+            keyboard: true,
         });
         y += 34.0;
     }
@@ -824,6 +833,7 @@ fn default_hit(a: &ActivityView, w: f32, h: f32) -> Option<Hit> {
             key: DEFAULT_ACTION.into(),
         },
         highlight: false,
+        keyboard: true,
     })
 }
 
@@ -863,6 +873,7 @@ fn action_row(
                 rect,
                 target: invoke(b),
                 highlight: true,
+                keyboard: true,
             });
             bx += bw + gap;
         }
@@ -885,6 +896,7 @@ fn action_row(
             rect,
             target: invoke(b),
             highlight: true,
+            keyboard: true,
         });
     }
     bh

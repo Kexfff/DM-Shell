@@ -31,13 +31,14 @@ use smithay_client_toolkit::{
         client::{
             Connection, Proxy, QueueHandle,
             globals::registry_queue_init,
-            protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+            protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
         },
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
         pointer::{
             PointerEvent, PointerEventKind, PointerHandler, cursor_shape::CursorShapeManager,
         },
@@ -96,6 +97,8 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     let mut shell = Shell {
         seat_state: SeatState::new(&globals, &qh),
         pointer: None,
+        keyboard: None,
+        keyboard_focus: None,
         cursor_shape,
         cursor_device: None,
         renderer: Renderer::new(config.font.as_deref()),
@@ -168,6 +171,9 @@ pub struct Shell {
     registry_state: RegistryState,
     seat_state: SeatState,
     pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// Output whose islands have keyboard focus (while one is pinned open).
+    keyboard_focus: Option<usize>,
     cursor_shape: Option<CursorShapeManager>,
     cursor_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
     /// Fonts and glyph caches, shared by every output; also measures text for layout.
@@ -285,6 +291,8 @@ struct OutputSurface {
     /// Animated island state on this output.
     stage: Stage,
     hover: Option<IslandKind>,
+    /// Opened from a keybind: stays expanded and takes the keyboard until closed.
+    pinned: Option<IslandKind>,
     /// A frame callback is outstanding; the next draw happens when it fires.
     frame_pending: bool,
     /// Timestamp of the last animation frame, for frame-rate independent springs.
@@ -351,6 +359,7 @@ impl Shell {
                 activities: self.activities.states(now),
             }))),
             Request::Reload => self.reload().map(|()| Reply::Done),
+            Request::Toggle { island } => self.toggle(island).map(|()| Reply::Done),
             Request::Version => Ok(Reply::Version {
                 version: env!("CARGO_PKG_VERSION").into(),
             }),
@@ -497,6 +506,127 @@ impl Shell {
         self.renderer
             .retain_images(|k| keys.iter().any(|key| key == k));
         self.refresh();
+    }
+
+    /// The output niri reports as focused (else the first one).
+    fn focused_index(&self) -> Option<usize> {
+        let by_name = self.islands.iter().position(|i| {
+            let name = self.output_state.info(&i.output).and_then(|info| info.name);
+            name.is_some() && name == self.focused_output
+        });
+        by_name.or((!self.islands.is_empty()).then_some(0))
+    }
+
+    /// Opens an island on the focused output with keyboard focus, or closes it.
+    fn toggle(&mut self, island: Island) -> Result<(), String> {
+        let kind = match island {
+            Island::Center => IslandKind::Center,
+            Island::Right => IslandKind::Right,
+        };
+        let index = self.focused_index().ok_or("no outputs with islands")?;
+        if self.islands[index].pinned == Some(kind) {
+            self.unpin(index);
+            return Ok(());
+        }
+        if kind == IslandKind::Right && self.views.focused.right.is_none() && self.tray.is_empty() {
+            return Err("the right island has nothing to show".into());
+        }
+        for i in 0..self.islands.len() {
+            if i != index && self.islands[i].pinned.is_some() {
+                self.unpin(i);
+            }
+        }
+        let island = &mut self.islands[index];
+        island.pinned = Some(kind);
+        island
+            .layer
+            .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        island.stage.set_keyboard(Some(kind));
+        self.update_stage(index);
+        Ok(())
+    }
+
+    fn unpin(&mut self, index: usize) {
+        let island = &mut self.islands[index];
+        if island.pinned.take().is_none() {
+            return;
+        }
+        island
+            .layer
+            .set_keyboard_interactivity(KeyboardInteractivity::None);
+        island.stage.set_keyboard(None);
+        if self.menu.as_ref().is_some_and(|m| m.output == index) {
+            self.menu = None;
+        }
+        self.update_stage(index);
+    }
+
+    /// Keyboard navigation of a pinned island.
+    fn on_key(&mut self, index: usize, key: Keysym) {
+        let island = &mut self.islands[index];
+        if island.pinned.is_none() {
+            return;
+        }
+        let selected = island.stage.selected_target();
+        match key {
+            Keysym::Escape => {
+                if self.menu.as_ref().is_some_and(|m| m.output == index) {
+                    self.close_menu();
+                } else {
+                    self.unpin(index);
+                }
+            }
+            Keysym::Up | Keysym::Left | Keysym::k | Keysym::h | Keysym::ISO_Left_Tab => {
+                self.move_selection(index, -1)
+            }
+            Keysym::Down | Keysym::Right | Keysym::j | Keysym::l | Keysym::Tab => {
+                self.move_selection(index, 1)
+            }
+            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                if let Some(target) = selected {
+                    self.activate(index, target, BTN_LEFT);
+                }
+            }
+            Keysym::Menu | Keysym::m => {
+                if let Some(target @ Target::Tray { .. }) = selected {
+                    self.activate(index, target, BTN_RIGHT);
+                }
+            }
+            Keysym::Delete | Keysym::BackSpace | Keysym::d => {
+                if let Some(Target::Invoke { id, .. } | Target::Dismiss { id }) = selected
+                    && let Response::Error(e) = self.handle(Request::Dismiss { id })
+                {
+                    log::warn!("dismiss failed: {e}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn move_selection(&mut self, index: usize, delta: i32) {
+        let island = &mut self.islands[index];
+        if island.stage.move_selection(delta) && !island.frame_pending {
+            self.draw(index);
+        }
+    }
+
+    /// Activates a target from the keyboard. Things that hand focus to an app (opening a
+    /// notification, a tray app, a menu entry) also close the pinned island.
+    fn activate(&mut self, index: usize, target: Target, button: u32) {
+        let hands_off = match &target {
+            Target::Invoke { .. } => true,
+            Target::Tray { .. } => button == BTN_LEFT,
+            Target::MenuItem { id } => self
+                .menu
+                .as_ref()
+                .and_then(|m| m.entry(*id))
+                .is_some_and(|e| e.children.is_empty()),
+            _ => false,
+        };
+        self.click(index, target, button);
+        if hands_off {
+            self.unpin(index);
+        }
     }
 
     /// Reloads the config shortly; repeated calls push the reload back.
@@ -691,7 +821,7 @@ impl Shell {
         island.stage.update(
             width as f32,
             &view,
-            island.hover,
+            island.pinned.or(island.hover),
             &self.theme,
             &mut self.renderer,
         );
@@ -782,6 +912,7 @@ impl Shell {
             pool,
             stage: Stage::default(),
             hover: None,
+            pinned: None,
             frame_pending: false,
             last_frame_ms: None,
         });
@@ -1018,6 +1149,13 @@ impl SeatHandler for Shell {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            match self.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => self.keyboard = Some(keyboard),
+                Err(e) => log::warn!("no keyboard: {e}"),
+            }
+            return;
+        }
         if capability != Capability::Pointer || self.pointer.is_some() {
             return;
         }
@@ -1040,6 +1178,11 @@ impl SeatHandler for Shell {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard
+            && let Some(keyboard) = self.keyboard.take()
+        {
+            keyboard.release();
+        }
         if capability == Capability::Pointer {
             if let Some(device) = self.cursor_device.take() {
                 device.destroy();
@@ -1051,6 +1194,82 @@ impl SeatHandler for Shell {
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl KeyboardHandler for Shell {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+        self.keyboard_focus = self.island_mut(surface);
+        log::debug!("keyboard focus: output {:?}", self.keyboard_focus);
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        // Something else took the keyboard (another exclusive layer); close.
+        if let Some(index) = self.island_mut(surface) {
+            self.unpin(index);
+        }
+        self.keyboard_focus = None;
+    }
+
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        if let Some(index) = self.keyboard_focus {
+            self.on_key(index, event.keysym);
+        }
+    }
+
+    fn repeat_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: Modifiers,
+        _: RawModifiers,
+        _: u32,
+    ) {
+    }
 }
 
 impl PointerHandler for Shell {

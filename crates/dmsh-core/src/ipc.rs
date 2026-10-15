@@ -39,6 +39,11 @@ pub enum Request {
     Version,
     /// Re-read the config file; replies with an error if it is invalid.
     Reload,
+    /// Open an island on the focused output with keyboard focus (arrows, Enter, Delete,
+    /// Esc), or close it if it is already open. Meant for compositor keybinds.
+    Toggle {
+        island: Island,
+    },
     /// Keep this connection open and stream [`Event`]s, one JSON object per line.
     Subscribe,
 }

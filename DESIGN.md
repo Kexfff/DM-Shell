@@ -181,6 +181,18 @@ by a test); `dmsh config check` validates; `dmsh config path` locates it.
   on or off takes effect on restart.
 - `dmsh render --config <path>` renders with a config's theme, for checking it headless.
 
+## Keybinds (niri)
+
+`dmsh niri` prints a snippet for niri's config (autostart plus binds). The binds use:
+
+- `dmsh toggle right` / `dmsh toggle center`: opens the island on the focused output,
+  pinned (stays expanded) with an exclusive keyboard grab, or closes it. Keys: arrows /
+  `j` `k` / Tab move the selection, Enter or Space activates, Delete dismisses a
+  notification row, `m` opens a tray icon's menu, Esc closes the menu, then the island.
+  Activating something that hands focus to an app (a notification, tray app, menu entry,
+  a center button) closes the island so the app gets the keyboard.
+- `dmsh activity clear --right`: clears the notification list.
+
 ## Phases
 
 0. **Skeleton** — layer surface per output, two static pills, input region, fractional
@@ -194,7 +206,8 @@ by a test); `dmsh config check` validates; `dmsh config path` locates it.
 4. **Expanded views**: clickable buttons with hover highlights, notification actions
    (`ActionInvoked`, `resident`), right-island list with per-row close and "Clear all",
    media controls (previous / play-pause / next over MPRIS), system tray with menus. ✓
-5. **Config (KDL)** with live reload. ✓ niri keybind integration: next.
+5. **Config (KDL)** with live reload; **niri keybind integration** (toggle with keyboard
+   navigation, `dmsh niri` snippet). ✓
 
 ## Open questions
 
