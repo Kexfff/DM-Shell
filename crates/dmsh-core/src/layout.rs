@@ -48,10 +48,9 @@ impl Color {
 /// Visual constants. The default is the Apple-like solid black pill theme.
 #[derive(Clone, Debug)]
 pub struct Theme {
-    /// Height reserved at the top of the output (layer-shell exclusive zone).
+    /// Height reserved at the top of the output (layer-shell exclusive zone). Also the
+    /// canvas height while nothing hangs below it.
     pub strip_height: u32,
-    /// Total surface height; expanded islands float over windows inside it.
-    pub surface_height: u32,
     pub pill_height: f32,
     pub pill_top: f32,
     /// Center island width when idle and when showing an activity.
@@ -70,7 +69,6 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             strip_height: 36,
-            surface_height: 320,
             pill_height: 30.0,
             pill_top: 3.0,
             center_idle_width: 190.0,
@@ -126,6 +124,21 @@ pub struct Scene {
     pub shapes: Vec<RoundRect>,
     /// Island outlines; only these receive pointer input.
     pub islands: Vec<Rect>,
+}
+
+impl Scene {
+    /// Logical height the canvas needs: the strip, or more when something (an expanded
+    /// island) extends below it, keeping the same gap underneath as above the pills.
+    /// During expand/collapse animations, callers should size for the larger extent so
+    /// the canvas never resizes mid-animation.
+    pub fn canvas_height(&self, theme: &Theme) -> u32 {
+        let bottom = self
+            .shapes
+            .iter()
+            .map(|s| s.rect.y + s.rect.h)
+            .fold(0.0_f32, f32::max);
+        ((bottom + theme.pill_top).ceil() as u32).max(theme.strip_height)
+    }
 }
 
 /// Positions of the islands on an output.
@@ -265,6 +278,24 @@ mod tests {
         let shapes = l.scene(&theme, &view).shapes;
         let (track, fill) = (shapes[2].rect, shapes[3].rect);
         assert_eq!(fill.x + fill.w, track.x + track.w);
+    }
+
+    #[test]
+    fn canvas_is_strip_height_when_collapsed_and_grows_below() {
+        let theme = Theme::default();
+        let view = View {
+            center: Some(activity(Some(0.5))),
+            right: Some(RightView {
+                newest: activity(None),
+                more: 3,
+            }),
+        };
+        let mut scene = Layout::compute(1000.0, &theme, &view).scene(&theme, &view);
+        assert_eq!(scene.canvas_height(&theme), theme.strip_height);
+
+        scene.shapes[0].rect.h = 150.0;
+        let expected = (theme.pill_top + 150.0 + theme.pill_top).ceil() as u32;
+        assert_eq!(scene.canvas_height(&theme), expected);
     }
 
     #[test]

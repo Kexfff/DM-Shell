@@ -67,7 +67,6 @@ pub fn run() -> Result<()> {
         output_state: OutputState::new(&globals, &qh),
         compositor,
         layer_shell,
-        pool: SlotPool::new(1 << 20, &shm)?,
         shm,
         fractional,
         theme: Theme::default(),
@@ -91,7 +90,6 @@ pub struct Shell {
     compositor: CompositorState,
     layer_shell: LayerShell,
     shm: Shm,
-    pool: SlotPool,
     fractional: Option<(
         wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
         wp_viewporter::WpViewporter,
@@ -116,8 +114,14 @@ struct OutputSurface {
     )>,
     /// Logical size from the last configure; `None` until the first one.
     size: Option<(u32, u32)>,
+    /// Canvas height last asked of the compositor.
+    requested_height: u32,
+    /// A resize was requested and its configure hasn't arrived yet.
+    resize_pending: bool,
     /// Output scale in 1/120ths.
     scale: u32,
+    /// Per output, so a collapse on one output can return memory without affecting others.
+    pool: SlotPool,
 }
 
 impl Drop for OutputSurface {
@@ -203,7 +207,7 @@ impl Shell {
             Some(&output),
         );
         layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_size(0, self.theme.surface_height);
+        layer.set_size(0, self.theme.strip_height);
         layer.set_exclusive_zone(self.theme.strip_height as i32);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         // Empty input region until the first draw sets the pill shapes.
@@ -219,12 +223,22 @@ impl Shell {
             .info(&output)
             .map_or(1, |info| info.scale_factor.max(1) as u32)
             * SCALE_DENOM;
+        let pool = match SlotPool::new(1 << 20, &self.shm) {
+            Ok(pool) => pool,
+            Err(e) => {
+                log::error!("creating buffer pool: {e}");
+                return;
+            }
+        };
         self.islands.push(OutputSurface {
             output,
             layer,
             scaling,
             size: None,
+            requested_height: self.theme.strip_height,
+            resize_pending: false,
             scale,
+            pool,
         });
     }
 
@@ -235,18 +249,44 @@ impl Shell {
     }
 
     fn draw(&mut self, index: usize) {
-        let island = &self.islands[index];
+        let island = &mut self.islands[index];
         let Some((width, height)) = island.size else {
             return;
         };
-        // Rounding rule from the fractional-scale protocol: half away from zero.
-        let to_buffer = |v: u32| ((v * island.scale + SCALE_DENOM / 2) / SCALE_DENOM).max(1);
-        let (bw, bh) = (to_buffer(width), to_buffer(height));
+        if island.resize_pending {
+            return; // The configure for the new size will redraw.
+        }
 
         let layout = Layout::compute(width as f32, &self.theme, &self.view);
         let scene = layout.scene(&self.theme, &self.view);
 
-        let (buffer, canvas) = match self.pool.create_buffer(
+        // The canvas is only as tall as its content: the strip while collapsed, taller
+        // while something floats over windows. The reserved strip never changes.
+        let needed = scene.canvas_height(&self.theme);
+        if needed != island.requested_height {
+            island.layer.set_size(0, needed);
+            island.layer.commit();
+            island.requested_height = needed;
+            island.resize_pending = true;
+            return;
+        }
+
+        // Rounding rule from the fractional-scale protocol: half away from zero.
+        let to_buffer = |v: u32| ((v * island.scale + SCALE_DENOM / 2) / SCALE_DENOM).max(1);
+        let (bw, bh) = (to_buffer(width), to_buffer(height));
+
+        // Pools only grow. Steady state needs two buffers (one on screen, one drawing), so
+        // a pool much larger than that is left over from an expansion: swap in a small one
+        // to return the memory. Buffers the compositor still holds stay valid on its side.
+        let len = (bw * bh * 4) as usize;
+        if island.pool.len() > 3 * len {
+            match SlotPool::new(2 * len, &self.shm) {
+                Ok(pool) => island.pool = pool,
+                Err(e) => log::warn!("shrinking buffer pool: {e}"),
+            }
+        }
+
+        let (buffer, canvas) = match island.pool.create_buffer(
             bw as i32,
             bh as i32,
             bw as i32 * 4,
@@ -381,8 +421,10 @@ impl LayerShellHandler for Shell {
             return;
         };
         let (w, h) = configure.new_size;
-        let size = (w.max(1), if h == 0 { self.theme.surface_height } else { h });
-        self.islands[index].size = Some(size);
+        let island = &mut self.islands[index];
+        let size = (w.max(1), if h == 0 { island.requested_height } else { h });
+        island.size = Some(size);
+        island.resize_pending = false;
         self.draw(index);
     }
 }

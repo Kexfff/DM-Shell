@@ -50,11 +50,16 @@ activities. It is pure logic with no I/O, so it is unit-testable without a displ
 - One **full-width, transparent layer-shell surface per output**, anchored top, on the
   `top` layer. Both islands live in this one buffer, so the center→right slide is a plain
   in-buffer animation, not a handoff between windows.
-- **Exclusive zone = thin strip** (windows tile below it). The surface itself is taller
-  than the strip so expanded islands float over windows.
+- **Exclusive zone = thin strip** (windows tile below it). It never changes, so windows
+  never move.
+- **The canvas is sized to its content**: strip height while collapsed (≈ 0.7 MB per
+  buffer at 1645 px / 1.75×), taller only while an island floats over windows. Growing
+  costs one configure round trip (about a frame), so it happens *before* an expand
+  animation starts and shrinking happens *after* a collapse finishes — the canvas never
+  resizes mid-animation.
+- Each output has its own buffer pool; after a collapse, an oversized pool is swapped for
+  a small one so the memory is actually returned.
 - **Input region = the pill shapes only**; clicks elsewhere fall through to windows.
-- The surface is never resized during animations (resizes need a compositor round trip
-  and stutter). The pill shapes change inside a fixed buffer.
 - CPU rasterization with `tiny-skia` into `wl_shm` buffers. Redraw only on frame
   callbacks while something is animating, and only the damaged region.
 - Fractional scaling via `wp_fractional_scale_v1` + `wp_viewporter` (integer
@@ -117,11 +122,6 @@ Stack: Rust, `smithay-client-toolkit`, `calloop`, `tiny-skia`; later `cosmic-tex
 
 ## Open questions
 
-- **Buffer memory.** A full-width, 320 px tall surface costs `w × 320 × scale² × 4` bytes
-  per buffer (≈ 6.4 MB at 1645 px / 1.75×, two in flight). Fine on one laptop panel, but
-  it blows the 20 MB budget on several 4K outputs. Before phase 3: keep the surface at
-  strip height while collapsed and grow it only for expansion (one configure round trip
-  is acceptable there), or give each island its own subsurface sized to the island.
 - Transient center events still appear on every monitor; "focused monitor only" needs
   niri IPC (phase 2).
 

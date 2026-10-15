@@ -177,7 +177,7 @@ fn render(
     let theme = Theme::default();
     let scene = Layout::compute(width, &theme, &view).scene(&theme, &view);
     let bw = (width * scale).round() as u32;
-    let bh = (theme.surface_height as f32 * scale).round() as u32;
+    let bh = (scene.canvas_height(&theme) as f32 * scale).round() as u32;
     let mut pixmap = dmsh_render::tiny_skia::Pixmap::new(bw, bh).context("invalid size")?;
     dmsh_render::render(&scene, scale, &mut pixmap.as_mut());
     pixmap
