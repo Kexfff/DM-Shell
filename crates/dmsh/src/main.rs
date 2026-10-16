@@ -1,7 +1,9 @@
+mod agent;
 mod config;
 mod headless;
 mod images;
 mod ipc;
+mod mcp;
 mod shell;
 
 use std::time::Duration;
@@ -13,7 +15,7 @@ use clap::{Parser, Subcommand};
 use dmsh_core::{
     Action, ActivitySpec, Control, IslandKind, Placement, Priority,
     activity::Island,
-    ipc::{Event, Reply, Request, Response},
+    ipc::{Reply, Request, Response},
 };
 
 /// A minimal dynamic-island shell for niri.
@@ -63,6 +65,23 @@ enum Command {
     },
     /// Print a snippet for niri's config: autostart and keybinds.
     Niri,
+    /// Run an MCP server on stdio: tools for agents to show status, notify and ask.
+    Mcp,
+    /// Handle a Claude Code hook (reads the hook's JSON on stdin). See `dmsh claude-code`.
+    Hook {
+        /// working, notification, permission, stop or end.
+        #[arg(value_parser = parse_hook)]
+        event: agent::Hook,
+    },
+    /// Set up Claude Code: print (or apply) the hooks config and the MCP command.
+    ClaudeCode {
+        /// Merge dmsh's hooks into ~/.claude/settings.json (a backup is kept).
+        #[arg(long)]
+        apply: bool,
+        /// Remove dmsh's hooks from ~/.claude/settings.json.
+        #[arg(long, conflicts_with = "apply")]
+        remove: bool,
+    },
     /// Set a quick control: wifi, dnd (do not disturb) or keep-awake.
     Control {
         /// wifi, dnd or keep-awake.
@@ -194,10 +213,10 @@ enum ActivityCommand {
 
 /// Printed by `dmsh niri`; `{dmsh}` becomes the path of the running binary, since niri's
 /// `PATH` usually doesn't include `~/.cargo/bin`.
-const NIRI_SNIPPET: &str = r#"// dmsh for niri: add these to ~/.config/niri/config.kdl
-// (merge the binds into your existing `binds {}` block; pick keys that are free).
+const NIRI_SNIPPET: &str = r#"// dmsh for niri. Save as ~/.config/niri/dmsh.kdl and add `include "dmsh.kdl"` to
+// config.kdl (install.sh does this), or merge it into config.kdl. Pick free keys.
 
-// Or install dist/dmsh.service instead (not both).
+// Or use dist/dmsh.service instead of this line (not both).
 spawn-at-startup "{dmsh}"
 
 binds {
@@ -217,6 +236,10 @@ fn main() -> Result<()> {
     .init();
 
     let cli = Cli::parse();
+    // Hooks and the MCP server talk on stdout/stderr to another program; keep them quiet.
+    if matches!(cli.command, Some(Command::Hook { .. } | Command::Mcp)) {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
     let config_path = cli.config.clone().or_else(config::default_path);
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => shell::run(cli.config),
@@ -252,6 +275,34 @@ fn main() -> Result<()> {
                 _ => None,
             };
             call(&Request::Control { control, state }).map(|_| ())
+        }
+        Command::Mcp => mcp::serve(),
+        Command::Hook { event } => agent::hook(event),
+        Command::ClaudeCode { apply, remove } => {
+            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            if apply || remove {
+                let settings = agent::claude_settings_path().context("$HOME is not set")?;
+                agent::apply(&settings, &exe, remove)?;
+                let verb = if remove {
+                    "Removed dmsh's hooks from"
+                } else {
+                    "Added dmsh's hooks to"
+                };
+                println!(
+                    "{verb} {} (backup: settings.json.dmsh-backup).",
+                    settings.display()
+                );
+                if !remove {
+                    println!("For the MCP tools, also run:");
+                    println!(
+                        "  claude mcp add --transport stdio dmsh --scope user -- '{}' mcp",
+                        exe.display()
+                    );
+                }
+            } else {
+                print!("{}", agent::setup_text(&exe)?);
+            }
+            Ok(())
         }
         Command::Niri => {
             let exe = std::env::current_exe().context("locating the dmsh binary")?;
@@ -382,27 +433,20 @@ fn activity(cmd: ActivityCommand) -> Result<()> {
 
 /// Pushes an activity and blocks until it's answered or removed.
 fn push_and_wait(spec: ActivitySpec) -> Result<()> {
-    // Subscribe first so a fast click can't be missed.
-    let events = ipc::subscribe()?;
-    let id = spec.id.clone();
-    call(&Request::Push(spec))?;
-    for event in events {
-        match event? {
-            Event::ActionInvoked { id: e, key } if e == id => {
-                println!("{key}");
-                return Ok(());
-            }
-            Event::Removed { id: e, reason } if e == id => {
-                println!(
-                    "{}",
-                    serde_json::to_value(reason)?.as_str().unwrap_or("removed")
-                );
-                std::process::exit(1);
-            }
-            _ => {}
+    match agent::ask(spec)? {
+        agent::Answer::Chose(key) => {
+            println!("{key}");
+            Ok(())
+        }
+        agent::Answer::Dismissed => {
+            println!("dismissed");
+            std::process::exit(1)
+        }
+        agent::Answer::TimedOut => {
+            println!("expired");
+            std::process::exit(1)
         }
     }
-    bail!("the shell went away")
 }
 
 /// Sends a request and turns an error response into an error.
@@ -447,6 +491,17 @@ fn parse_action(s: &str) -> Result<Action, String> {
         return Err("expected key:Label".into());
     }
     Ok(Action::new(key, label))
+}
+
+fn parse_hook(s: &str) -> Result<agent::Hook, String> {
+    Ok(match s {
+        "working" => agent::Hook::Working,
+        "notification" => agent::Hook::Notification,
+        "permission" => agent::Hook::Permission,
+        "stop" => agent::Hook::Stop,
+        "end" => agent::Hook::End,
+        _ => return Err("expected working, notification, permission, stop or end".into()),
+    })
 }
 
 fn parse_hover(s: &str) -> Result<IslandKind, String> {

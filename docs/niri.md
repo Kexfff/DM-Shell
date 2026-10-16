@@ -2,7 +2,8 @@
 
 ## Autostart and keybinds
 
-`dmsh niri` prints a snippet for `~/.config/niri/config.kdl`. It refers to dmsh by the
+`install.sh` sets this up (see the README). By hand: `dmsh niri` prints a snippet; save
+it as `~/.config/niri/dmsh.kdl` and add `include "dmsh.kdl"` to `config.kdl`. It refers to dmsh by the
 full path of the binary you ran it with, because niri starts programs with its own
 `PATH`, which usually doesn't include `~/.cargo/bin`. With `cargo install` it looks like
 this:

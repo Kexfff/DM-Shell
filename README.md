@@ -35,6 +35,8 @@ AI agents can put things on the islands and wait for answers.
   indicators, keybind toggles with full keyboard navigation.
 - **Hover to expand**, click to act; spring animations throughout.
 - **Live-reloaded KDL config**: colors, font, sizes, clock format, animation, monitors.
+- **For agents**: Claude Code hooks (status and Allow/Deny permission prompts in the
+  island) and an MCP server (show status, notify, ask the user).
 - **Scriptable**: push activities, add buttons, `--wait` for the clicked answer, stream
   events, render headlessly to PNG.
 
@@ -65,41 +67,64 @@ Missing optional services just switch that feature off (dmsh logs a warning).
 
 ## Install
 
-dmsh builds with stable Rust (the repo pins `stable` in `rust-toolchain.toml`):
-
 ```bash
 git clone https://github.com/Kexfff/DM-Shell && cd DM-Shell
-cargo install --path crates/dmsh
+./install.sh
 ```
 
-That puts `dmsh` in `~/.cargo/bin`, which most shells don't have on `PATH` by default.
-Add it so the commands below work in your terminal (fish: `fish_add_path ~/.cargo/bin`):
+[`install.sh`](install.sh) does three things and nothing else:
+
+1. **Dependencies** — fontconfig, libxkbcommon and Rust (pacman, apt or dnf), and offers
+   the optional ones for volume, battery and Wi-Fi.
+2. **The binary** — builds it and installs `~/.local/bin/dmsh` (`--prefix` to change).
+3. **The niri snippet** — writes `~/.config/niri/dmsh.kdl` (autostart and keybinds) and
+   adds `include "dmsh.kdl"` to your `config.kdl`. Keys you already use are left alone
+   (dmsh's bind for them is commented out), and the result is checked with
+   `niri validate`.
+
+It asks before touching anything outside the repo; `--yes` skips the questions,
+`--no-deps` skips packages, and `./install.sh --uninstall` removes the binary, the
+snippet and the include line again.
+
+Only one notification daemon can run at a time: stop mako, swaync or another shell's
+notifications (dmsh also takes over when they exit).
+
+<details>
+<summary>Installing by hand</summary>
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"
+cargo install --path crates/dmsh
+~/.cargo/bin/dmsh niri > ~/.config/niri/dmsh.kdl
+echo 'include "dmsh.kdl"' >> ~/.config/niri/config.kdl
 ```
 
-niri starts programs with its own `PATH`, which usually doesn't include `~/.cargo/bin`
-either — so in niri's config, refer to dmsh by its full path. Then start it at login in
-one of two ways:
+niri starts programs with its own `PATH`, which usually doesn't include `~/.cargo/bin`,
+so the snippet refers to dmsh by its full path. To use `dmsh` in a terminal, add the
+directory to your `PATH` (fish: `fish_add_path ~/.cargo/bin`). Instead of niri's
+autostart you can use the systemd unit [`dist/dmsh.service`](dist/dmsh.service)
+(not both).
 
-- **niri autostart** — print a snippet with autostart and keybinds (it uses the full
-  path of the `dmsh` you run it with), then merge it into `~/.config/niri/config.kdl`:
+</details>
 
-  ```bash
-  ~/.cargo/bin/dmsh niri
-  ```
+## With AI agents
 
-- **systemd user service** — [`dist/dmsh.service`](dist/dmsh.service) is tied to
-  `graphical-session.target`. Copy it to `~/.config/systemd/user/`, point `ExecStart`
-  at your binary (`%h/.cargo/bin/dmsh` for `cargo install`), then:
+dmsh shows what your agents are doing and lets them ask you things in the island.
 
-  ```bash
-  systemctl --user enable --now dmsh.service
-  ```
+**Claude Code:** session status (working, needs input, done) and permission prompts you
+answer with Allow / Deny right in the island:
 
-Use one or the other, not both. Only one notification daemon can run at a time: stop
-mako, swaync or another shell's notifications (dmsh also takes over when they exit).
+```bash
+dmsh claude-code --apply
+```
+
+**Any MCP client:** tools to show status, notify and ask you a question:
+
+```bash
+claude mcp add --transport stdio dmsh --scope user -- ~/.local/bin/dmsh mcp
+```
+
+Scripts can do the same from the shell (`dmsh activity push … --wait`). See
+[docs/agents.md](docs/agents.md).
 
 ## Try it
 
@@ -135,7 +160,7 @@ what the islands display, as JSON.
 - [Configuration](docs/configuration.md) — every option, live reload, errors
 - [niri integration](docs/niri.md) — autostart, keybinds, keyboard navigation
 - [Command line](docs/cli.md) — every command and option
-- [Scripts and agents](docs/agents.md) — activities, buttons, `--wait`, events, recipes
+- [Scripts and agents](docs/agents.md) — Claude Code, MCP, activities, `--wait`, events
 - [IPC protocol](docs/ipc.md) — the JSON socket, for any language
 - [Design](DESIGN.md) — architecture, rendering model, decisions
 

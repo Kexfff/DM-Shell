@@ -1,8 +1,8 @@
 # Command line
 
 `dmsh` with no command runs the shell. Every other command talks to the running shell
-over its socket (see [docs/ipc.md](ipc.md)), except `config`, `icons`, `schema`, `niri`
-and `render`, which work without it.
+over its socket (see [docs/ipc.md](ipc.md)), except `config`, `icons`, `schema`, `niri`,
+`claude-code` and `render`, which work without it.
 
 Global option: `--config <path>` picks the config file (default
 `$XDG_CONFIG_HOME/dmsh/config.kdl`). `dmsh <command> --help` shows each command's help.
@@ -66,7 +66,10 @@ dmsh activity push --id ID --title TITLE [options]
 
 | Command | What it does |
 |---|---|
-| `dmsh niri` | Print a niri config snippet: autostart and keybinds. |
+| `dmsh niri` | Print a niri config snippet: autostart and keybinds (with dmsh's full path). |
+| `dmsh claude-code [--apply\|--remove]` | Print, add or remove the Claude Code hooks config. See [docs/agents.md](agents.md#claude-code). |
+| `dmsh hook EVENT` | Handle a Claude Code hook: `working`, `notification`, `permission`, `stop`, `end` (reads the hook JSON on stdin). |
+| `dmsh mcp` | Run the MCP server on stdio. See [docs/agents.md](agents.md#mcp-server). |
 | `dmsh icons` | List the built-in icon names. |
 | `dmsh schema` | Print the JSON Schema of the IPC protocol. |
 | `dmsh msg 'JSON'` | Send one raw request line and print the raw response. |

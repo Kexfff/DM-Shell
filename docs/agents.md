@@ -58,39 +58,51 @@ dmsh events
 Prints every `action_invoked` and `removed` event as a JSON line. Useful for activities
 with `--keep-on-action`, where buttons are pressed repeatedly.
 
-## Recipe: Claude Code hooks
+## Claude Code
 
-[Claude Code hooks](https://code.claude.com/docs/en/hooks) run commands on
-events. In `~/.claude/settings.json`, these show when Claude wants your attention and
-when it finishes:
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "jq -j .message | xargs -0 dmsh activity push --id claude --title 'Claude Code' --icon terminal --placement center --priority high --ttl 30s --body"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "dmsh activity push --id claude --title 'Claude finished' --icon check" }
-        ]
-      }
-    ]
-  }
-}
+```bash
+dmsh claude-code            # print the hooks config and the MCP command
+dmsh claude-code --apply    # merge the hooks into ~/.claude/settings.json (keeps a backup)
+dmsh claude-code --remove   # take them out again
 ```
 
-The hook receives its event as JSON on stdin; `jq` pulls out the message. A
-`PreToolUse` hook can ask in the island before a tool runs, using `--wait` and the hook
-exit codes described in Claude Code's documentation.
+The hooks call `dmsh hook <event>`, which reads the hook's JSON on stdin and never fails
+the hook (if dmsh isn't running, it does nothing):
+
+| Claude Code event | `dmsh hook` | In the island |
+|---|---|---|
+| `UserPromptSubmit`, `PostToolUse` | `working` | "Working" in the center (low priority, so anything else wins) |
+| `Notification` | `notification` | "Claude needs your permission…" in the center |
+| `PermissionRequest` | `permission` | **Allow / Deny / In terminal** — see below |
+| `Stop` | `stop` | "Done" pops up, then waits on the right island (30 min) |
+| `SessionEnd` | `end` | Removes the session's activities |
+
+Each session gets its own activities (keyed by session id) labeled "Claude Code" with the
+project's folder name, so several sessions don't overwrite each other.
+
+**Permission prompts in the island.** When Claude Code is about to ask for permission,
+the island shows "Allow Bash?" with the command (or file, or URL) and three buttons.
+Allow and Deny answer Claude Code directly. "In terminal", no answer within a minute, or
+dmsh not running all leave the decision to Claude Code's own prompt, as before. Deny
+rules in your settings still apply even if you click Allow.
+
+## MCP server
+
+`dmsh mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server over
+stdio. Register it with Claude Code (or any MCP client):
+
+```bash
+claude mcp add --transport stdio dmsh --scope user -- ~/.local/bin/dmsh mcp
+```
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `show_status` | `id`, `title`, `details?`, `progress?` (0–1), `icon?` | Shows or updates a live status in the center. |
+| `clear_status` | `id` | Removes it. |
+| `notify` | `title`, `details?`, `urgent?`, `icon?` | A notification: center briefly, then the right island. |
+| `ask_user` | `question`, `options` (2–4), `details?`, `timeout_seconds?` (default 300) | Asks with buttons and waits; returns the chosen option, or that it was dismissed or timed out. |
+
+Activities from MCP are labeled with the client's name (e.g. "claude-code").
 
 ## Headless rendering
 

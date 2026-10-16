@@ -140,7 +140,10 @@ the rest keep running. Nothing polls: every source is event-driven.
 
 ## AI-agent friendliness
 
-1. **Agents drive the shell** (primary). A Unix socket with newline-delimited JSON (same
+1. **Agents drive the shell** (primary). Claude Code hooks (`dmsh hook`, set up with
+   `dmsh claude-code --apply`) show each session's status and route permission prompts
+   to Allow / Deny buttons; `dmsh mcp` gives MCP clients `show_status`, `notify`,
+   `ask_user` and `clear_status`. Underneath, everything is the socket protocol: A Unix socket with newline-delimited JSON (same
    style as niri's IPC) and a CLI over it, e.g.
    `dmsh activity push --id build --title "cargo build" --progress 0.4 --placement center --ttl 30s`.
    JSON Schema generated from the Rust types; an MCP wrapper can come later. Example use:
@@ -219,6 +222,13 @@ by a test); `dmsh config check` validates; `dmsh config path` locates it.
 Quick controls are also available to scripts and agents:
 `dmsh control wifi on|off|toggle`, `dmsh control keep-awake on|off|toggle`.
 
+## Install
+
+`install.sh` installs dependencies, the binary (`~/.local/bin/dmsh`) and the niri
+snippet (`~/.config/niri/dmsh.kdl` + an `include` line), and nothing else; the rest of a
+desktop belongs to a separate setup repo. No workspace indicator: niri's overview covers
+it.
+
 ## Phases
 
 0. **Skeleton** — layer surface per output, two static pills, input region, fractional
@@ -237,6 +247,8 @@ Quick controls are also available to scripts and agents:
 6. **Daily-driver gaps**: always-visible battery, quick controls (Wi-Fi, keep awake),
    clock refresh on resume (logind `PrepareForSleep`), takeover from a previous shell,
    systemd unit. ✓
+7. **Install script and agent integration** (Claude Code hooks with island permission
+   prompts, MCP server). ✓
 
 ## Open questions
 
@@ -246,6 +258,5 @@ Quick controls are also available to scripts and agents:
 - Wi-Fi toggle: only "on while on" was exercised live; turning the radio off is untested
   (the VM has no Wi-Fi device).
 - Multi-monitor is unit-tested only; the VM has one display head.
-- Workspaces indicator: undecided.
 - Multi-monitor focus handling is unit-tested but not yet tried on a second monitor.
 
