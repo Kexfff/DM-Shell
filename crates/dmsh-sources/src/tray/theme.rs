@@ -21,6 +21,12 @@ struct Index {
     inherits: Vec<String>,
 }
 
+impl Default for IconFinder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IconFinder {
     pub fn new() -> Self {
         Self {

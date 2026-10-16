@@ -1,5 +1,6 @@
 mod config;
 mod headless;
+mod images;
 mod ipc;
 mod shell;
 
@@ -62,9 +63,9 @@ enum Command {
     },
     /// Print a snippet for niri's config: autostart and keybinds.
     Niri,
-    /// Set a quick control: wifi or keep-awake.
+    /// Set a quick control: wifi, dnd (do not disturb) or keep-awake.
     Control {
-        /// wifi or keep-awake.
+        /// wifi, dnd or keep-awake.
         #[arg(value_parser = parse_enum::<Control>)]
         control: Control,
         /// on, off or toggle.
@@ -115,6 +116,9 @@ enum Command {
         /// Show the Wi-Fi quick control: on or off.
         #[arg(long, value_parser = ["on", "off"])]
         wifi: Option<String>,
+        /// Render with do not disturb on.
+        #[arg(long)]
+        dnd: bool,
     },
 }
 
@@ -146,6 +150,12 @@ enum ActivityCommand {
         /// Built-in icon name (see `dmsh icons`).
         #[arg(long)]
         icon: Option<String>,
+        /// A picture instead of the icon: a PNG/SVG path or an icon-theme name.
+        #[arg(long)]
+        image: Option<String>,
+        /// Who it's from, shown when expanded (e.g. an app or agent name).
+        #[arg(long)]
+        app: Option<String>,
         /// A button, as `key:Label` (repeatable). The key `default` is invoked by
         /// clicking the activity itself.
         #[arg(long = "action", value_parser = parse_action)]
@@ -294,7 +304,9 @@ fn main() -> Result<()> {
             pointer,
             battery,
             wifi,
+            dnd,
         } => headless::render(headless::Options {
+            dnd,
             battery: battery.as_deref().map(parse_battery).transpose()?,
             wifi: wifi.map(|w| w == "on"),
             config: match &cli.config {
@@ -327,6 +339,8 @@ fn activity(cmd: ActivityCommand) -> Result<()> {
             body,
             progress,
             icon,
+            image,
+            app,
             actions,
             keep_on_action,
             wait,
@@ -339,6 +353,8 @@ fn activity(cmd: ActivityCommand) -> Result<()> {
                 body,
                 progress,
                 icon,
+                image,
+                app,
                 actions,
                 keep_on_action,
                 placement,

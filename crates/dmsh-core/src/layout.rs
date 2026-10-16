@@ -307,6 +307,8 @@ pub enum Target {
     },
     MenuBack,
     Control(Control),
+    /// Scroll the expanded right island's list by this many rows.
+    Scroll(i32),
 }
 
 /// A clickable area; the first hit containing the pointer wins.
@@ -335,6 +337,8 @@ pub struct Content {
 const PAD: f32 = 12.0;
 const EXPANDED_PAD: f32 = 16.0;
 const ROW_HEIGHT: f32 = 46.0;
+/// Notification rows visible at once in the expanded right island.
+pub const LIST_ROWS: usize = 6;
 /// Diameter of the round quick-control buttons.
 const CONTROL_SIZE: f32 = 38.0;
 
@@ -396,6 +400,12 @@ fn place(mut t: TextDraw, x: f32, y: f32) -> Draw {
 
 /// The activity's icon, or a status dot when it has none.
 fn icon(a: &ActivityView, theme: &Theme, x: f32, y: f32, size: f32) -> Draw {
+    if let Some(key) = &a.image {
+        return Draw::Image(ImageDraw {
+            key: key.clone(),
+            rect: Rect::new(x, y, size, size),
+        });
+    }
     let color = theme.priority_color(a.priority);
     match &a.icon {
         Some(name) => Draw::Icon(IconDraw {
@@ -500,13 +510,20 @@ fn activity_expanded(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Co
     let title_w = w - title_x - EXPANDED_PAD;
     let (t, _, th) = text(m, &a.title, title_style, theme.text, title_w, 1);
 
+    // Who it's from, as a small caption above the title.
+    let mut items = Vec::new();
+    let mut top = EXPANDED_PAD;
+    if let Some(app) = a.app.as_deref().filter(|s| !s.is_empty()) {
+        let style = TextStyle::new(11.5, Weight::Semibold);
+        let (c, _, ch) = text(m, app, style, theme.text_secondary, title_w, 1);
+        items.push(place(c, title_x, top - 2.0));
+        top += ch;
+    }
     let row = icon_size.max(th);
-    let icon_y = EXPANDED_PAD + (row - icon_size) / 2.0;
-    let mut items = vec![
-        icon(a, theme, EXPANDED_PAD, icon_y, icon_size),
-        place(t, title_x, EXPANDED_PAD + (row - th) / 2.0),
-    ];
-    let mut y = EXPANDED_PAD + row;
+    let icon_y = top + (row - icon_size) / 2.0;
+    items.push(icon(a, theme, EXPANDED_PAD, icon_y, icon_size));
+    items.push(place(t, title_x, top + (row - th) / 2.0));
+    let mut y = top + row;
     if let Some(body) = &a.body {
         let style = TextStyle::new(13.0, Weight::Regular);
         let (b, _, bh) = text(m, body, style, theme.text_secondary, inner, 3);
@@ -588,8 +605,21 @@ fn right_compact(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         x += slot;
         end_pad = 4.0;
     }
-    if let Some(battery) = &view.battery {
+    if view.controls.dnd {
         if !view.tray.is_empty() {
+            x += 4.0;
+        }
+        let size = 14.0;
+        items.push(Draw::Icon(IconDraw {
+            name: "moon".into(),
+            rect: Rect::new(x, (h - size) / 2.0, size, size),
+            color: theme.text_secondary,
+        }));
+        x += size + 8.0;
+        end_pad = PAD;
+    }
+    if let Some(battery) = &view.battery {
+        if !view.tray.is_empty() && !view.controls.dnd {
             x += 4.0;
         }
         let size = 20.0;
@@ -699,6 +729,7 @@ fn controls_row(
         let icon = if on { "wifi" } else { "wifi-off" };
         buttons.push((icon, on, Control::Wifi));
     }
+    buttons.push(("moon", controls.dnd, Control::Dnd));
     buttons.push(("coffee", controls.keep_awake, Control::KeepAwake));
     let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
     let mut x = pad;
@@ -883,7 +914,35 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         }));
         y += 5.0;
     }
-    for a in items {
+    // A window of LIST_ROWS rows, scrolled by `right_scroll` (wheel, or the rows below).
+    let offset = view.right_scroll.min(items.len().saturating_sub(LIST_ROWS));
+    if offset > 0 {
+        let label = format!("{offset} newer");
+        let delta = Some(-(LIST_ROWS as i32));
+        scroll_row(
+            &label,
+            "chevron-up",
+            delta,
+            y,
+            w,
+            theme,
+            m,
+            &mut draws,
+            &mut hits,
+        );
+        y += 28.0;
+    }
+    let visible = &items[offset..(offset + LIST_ROWS).min(items.len())];
+    let below = total - offset - visible.len();
+    let more_row = (below > 0).then(|| {
+        // Rows past what the view carries can't be scrolled to; they're only counted.
+        let scrollable = offset + visible.len() < items.len();
+        (
+            format!("{below} more"),
+            scrollable.then_some(LIST_ROWS as i32),
+        )
+    });
+    for a in visible {
         let row = Rect::new(6.0, y, w - 12.0, ROW_HEIGHT);
         let title_style = TextStyle::new(13.0, Weight::Semibold);
         let (t, _, th) = text(m, &a.title, title_style, theme.text, text_w, 1);
@@ -934,12 +993,19 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         });
         y += ROW_HEIGHT;
     }
-    if total > items.len() {
-        let style = TextStyle::new(12.0, Weight::Medium);
-        let more = format!("+{} more", total - items.len());
-        let (t, tw, th) = text(m, &more, style, theme.text_secondary, text_w, 1);
-        draws.push(place(t, (w - tw) / 2.0, y + (24.0 - th) / 2.0));
-        y += 24.0;
+    if let Some((label, delta)) = more_row {
+        scroll_row(
+            &label,
+            "chevron-down",
+            delta,
+            y,
+            w,
+            theme,
+            m,
+            &mut draws,
+            &mut hits,
+        );
+        y += 28.0;
     }
     if total > 1 {
         let button = Rect::new(6.0, y + 2.0, w - 12.0, 30.0);
@@ -960,6 +1026,41 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         items: draws,
         hits,
         key: "r:list".into(),
+    }
+}
+
+/// A "N newer" / "N more" row in the expanded list; scrolls by `delta` rows when clicked
+/// (or just counts, with `None`).
+#[allow(clippy::too_many_arguments)]
+fn scroll_row(
+    label: &str,
+    icon_name: &str,
+    delta: Option<i32>,
+    y: f32,
+    w: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    draws: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) {
+    let h = 28.0;
+    let style = TextStyle::new(12.0, Weight::Medium);
+    let (t, tw, th) = text(m, label, style, theme.text_secondary, w - 40.0, 1);
+    let size = 12.0;
+    let x = (w - tw - size - 6.0) / 2.0;
+    draws.push(Draw::Icon(IconDraw {
+        name: icon_name.into(),
+        rect: Rect::new(x, y + (h - size) / 2.0, size, size),
+        color: theme.text_secondary,
+    }));
+    draws.push(place(t, x + size + 6.0, y + (h - th) / 2.0));
+    if let Some(delta) = delta {
+        hits.push(Hit {
+            rect: Rect::new(6.0, y, w - 12.0, h),
+            target: Target::Scroll(delta),
+            highlight: true,
+            keyboard: true,
+        });
     }
 }
 
@@ -1070,6 +1171,8 @@ pub(crate) mod tests {
             body: Some("body text".into()),
             progress,
             icon: Some("bell".into()),
+            image: None,
+            app: None,
             actions: Vec::new(),
             priority: Priority::Normal,
         }
@@ -1155,12 +1258,13 @@ pub(crate) mod tests {
         assert!(compact.w > single.w, "+1 badge adds width");
 
         let list = right_content(&view(None, &items), true, &theme, &mut m).unwrap();
-        // Keep awake, close button, row, close button, row, clear all.
+        // DND, keep awake, close button, row, close button, row, clear all.
         let targets: Vec<_> = list.hits.iter().map(|h| h.target.clone()).collect();
-        assert_eq!(targets[0], Target::Control(Control::KeepAwake));
-        assert_eq!(targets[1], Target::Dismiss { id: "a".into() });
+        assert_eq!(targets[0], Target::Control(Control::Dnd));
+        assert_eq!(targets[1], Target::Control(Control::KeepAwake));
+        assert_eq!(targets[2], Target::Dismiss { id: "a".into() });
         assert_eq!(targets.last(), Some(&Target::ClearRight));
-        assert_eq!(targets.len(), 6);
+        assert_eq!(targets.len(), 7);
         assert!(right_content(&view(None, &[]), false, &theme, &mut m).is_none());
         // Expanded still offers the quick controls.
         assert!(right_content(&view(None, &[]), true, &theme, &mut m).is_some());
@@ -1245,10 +1349,14 @@ pub(crate) mod tests {
         // Expanded: controls, then the tray icons, then the list.
         let list = right_content(&v, true, &theme, &mut m).unwrap();
         assert!(matches!(list.hits[0].target, Target::Control(_)));
-        assert!(matches!(list.hits[1].target, Target::Tray { .. }));
+        let tray = list
+            .hits
+            .iter()
+            .find(|h| matches!(h.target, Target::Tray { .. }))
+            .expect("tray icon");
         // Few icons share the header row with the controls.
         assert_eq!(list.hits[0].rect.y, 10.0);
-        assert!(list.hits[1].rect.y < 10.0 + CONTROL_SIZE);
+        assert!(tray.rect.y < 10.0 + CONTROL_SIZE);
     }
 
     #[test]
@@ -1330,14 +1438,75 @@ pub(crate) mod tests {
                 .collect()
         };
         let without = right_content(&v, true, &theme, &mut m).unwrap();
-        assert_eq!(controls(&without), [Target::Control(Control::KeepAwake)]);
+        let dnd = Target::Control(Control::Dnd);
+        let awake = Target::Control(Control::KeepAwake);
+        assert_eq!(controls(&without), [dnd.clone(), awake.clone()]);
         v.controls.wifi = Some(true);
         let with = right_content(&v, true, &theme, &mut m).unwrap();
-        let expected = [
-            Target::Control(Control::Wifi),
-            Target::Control(Control::KeepAwake),
-        ];
-        assert_eq!(controls(&with), expected);
+        assert_eq!(
+            controls(&with),
+            [Target::Control(Control::Wifi), dnd, awake]
+        );
+    }
+
+    #[test]
+    fn list_scrolls_in_windows_of_rows() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let items: Vec<_> = (0..10).map(|i| activity(&format!("n{i}"), None)).collect();
+        let mut v = view(None, &items);
+        let rows = |c: &Content| -> Vec<String> {
+            c.hits
+                .iter()
+                .filter_map(|h| match &h.target {
+                    Target::Dismiss { id } if h.keyboard => Some(id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let scrolls = |c: &Content| -> Vec<i32> {
+            c.hits
+                .iter()
+                .filter_map(|h| match h.target {
+                    Target::Scroll(d) => Some(d),
+                    _ => None,
+                })
+                .collect()
+        };
+        let top = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(rows(&top), ["n0", "n1", "n2", "n3", "n4", "n5"]);
+        assert_eq!(scrolls(&top), [LIST_ROWS as i32], "only '4 more'");
+
+        v.right_scroll = 6;
+        let down = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(
+            rows(&down),
+            ["n4", "n5", "n6", "n7", "n8", "n9"],
+            "clamped to the end"
+        );
+        assert_eq!(scrolls(&down), [-(LIST_ROWS as i32)], "only '4 newer'");
+    }
+
+    #[test]
+    fn images_replace_icons_and_app_is_a_caption() {
+        let theme = Theme::default();
+        let a = ActivityView {
+            image: Some("file:/tmp/avatar.png".into()),
+            app: Some("Telegram".into()),
+            ..activity("n", None)
+        };
+        let c = center_content(&view(Some(a), &[]), true, &theme, &mut FakeMeasure);
+        assert!(
+            c.items
+                .iter()
+                .any(|d| matches!(d, Draw::Image(i) if i.key == "file:/tmp/avatar.png"))
+        );
+        assert!(!c.items.iter().any(|d| matches!(d, Draw::Icon(_))));
+        let caption = c
+            .items
+            .iter()
+            .any(|d| matches!(d, Draw::Text(t) if t.text == "Telegram"));
+        assert!(caption);
     }
 
     #[test]

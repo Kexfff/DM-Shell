@@ -37,7 +37,10 @@ Both are solid black, Apple-style pills (the first and default theme).
   controls** (Wi-Fi on/off via NetworkManager, "Keep awake" via the Wayland idle-inhibit
   protocol), tray icons, battery — and the list. Dark monochrome tray icons (from icon
   themes made for light panels) are tinted light so they show on the black pill.
-  Critical battery also takes the center until charging.
+  Critical battery also takes the center until charging. **Do not disturb** sends `flow`
+  activities below critical straight to the right island (a moon shows there). The list
+  shows 6 rows and scrolls (wheel, or "N newer" / "N more" rows that the keyboard can
+  reach); the view carries up to 32 items.
 
 ### Placement and lifecycle
 
@@ -121,7 +124,7 @@ the rest keep running. Nothing polls: every source is event-driven.
 | media | MPRIS on the session bus (playerctld ignored) | center, low priority; newest playing player, else newest paused (kept 5 min) |
 | power | UPower `DisplayDevice` | right: charging / on battery / fully charged; battery low ≤ 20 % (flow, high), critical ≤ 5 % (center, critical) |
 | network | NetworkManager `PrimaryConnection`, settled for 1.5 s | right: "Wi-Fi: <name>", "Disconnected" |
-| notifications | dmsh owns `org.freedesktop.Notifications` | flow activity per notification; urgency → priority; actions; emits `ActionInvoked` / `NotificationClosed` with the right reason |
+| notifications | dmsh owns `org.freedesktop.Notifications` | flow activity per notification; urgency → priority; actions; app name; picture from `image-data` → `image-path` → app icon → `icon_data`; markup stripped to plain text; emits `ActionInvoked` / `NotificationClosed` with the right reason |
 | tray | StatusNotifierItem host (or watcher) + dbusmenu | icons on the right island, menus inside it |
 
 - **Notifications**: only one daemon can own the name. Stop mako/swaync/a Quickshell

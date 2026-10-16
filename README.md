@@ -22,13 +22,15 @@ AI agents can put things on the islands and wait for answers.
 
 ## Features
 
-- **Notifications** (`org.freedesktop.Notifications`) with actions, urgency and replace
-  ids; a list on the right island with per-item dismiss and "Clear all".
+- **Notifications** (`org.freedesktop.Notifications`) with app icons and images
+  (avatars), actions, urgency and replace ids; markup is cleaned to plain text. A
+  scrollable list on the right island with per-item dismiss and "Clear all".
 - **On-screen displays** for volume, brightness and keyboard layout.
 - **Media** (MPRIS): what's playing, with previous / play-pause / next when expanded.
 - **System tray** (StatusNotifierItem) with app menus shown inside the island.
 - **Battery** always on the right island; a critical battery also takes the center.
-- **Quick controls**: Wi-Fi on/off and "Keep awake".
+- **Quick controls**: Wi-Fi on/off, do not disturb (notifications skip the center unless
+  critical) and "Keep awake".
 - **niri integration**: focused-monitor awareness, keyboard-layout and screencast
   indicators, keybind toggles with full keyboard navigation.
 - **Hover to expand**, click to act; spring animations throughout.

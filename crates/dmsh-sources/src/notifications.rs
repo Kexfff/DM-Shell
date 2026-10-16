@@ -20,7 +20,7 @@ use zbus::{
     zvariant::OwnedValue,
 };
 
-use crate::{Emitter, Removal};
+use crate::{Emitter, Event, Removal};
 
 const PREFIX: &str = "notification:";
 const NAME: &str = "org.freedesktop.Notifications";
@@ -54,10 +54,49 @@ struct Server {
     live: Arc<Mutex<HashSet<u32>>>,
 }
 
+impl Server {
+    /// The best picture for a notification, most specific first: raw pixels from
+    /// `image-data` (e.g. a sender's avatar, sent to the shell as an [`Event::Image`]),
+    /// `image-path`, the app's icon, then the app icon in `icon_data` pixels.
+    fn image(
+        &self,
+        id: u32,
+        hints: &HashMap<String, OwnedValue>,
+        app_icon: &str,
+    ) -> Option<String> {
+        let hint = |names: &[&str]| names.iter().find_map(|n| hints.get(*n)?.try_clone().ok());
+        let pixels = |names: &[&str], icon: bool| {
+            let (width, height, rgba) = image_data(hint(names)?)?;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&rgba, &mut hasher);
+            let key = format!(
+                "data:{}:{:x}",
+                activity_id(id),
+                std::hash::Hasher::finish(&hasher)
+            );
+            self.emitter.emit(Event::Image {
+                key: key.clone(),
+                width,
+                height,
+                rgba: Arc::new(rgba),
+                icon,
+            });
+            Some(key)
+        };
+        let path = hint(&["image-path", "image_path"])
+            .and_then(|v| String::try_from(v).ok())
+            .filter(|p| !p.is_empty());
+        pixels(&["image-data", "image_data"], false)
+            .or(path)
+            .or_else(|| (!app_icon.is_empty()).then(|| app_icon.to_owned()))
+            .or_else(|| pixels(&["icon_data"], true))
+    }
+}
+
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Server {
     fn get_capabilities(&self) -> Vec<&str> {
-        vec!["body", "persistence", "actions"]
+        vec!["body", "persistence", "actions", "icon-static"]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -65,7 +104,7 @@ impl Server {
         &mut self,
         app_name: String,
         replaces_id: u32,
-        _app_icon: String,
+        app_icon: String,
         summary: String,
         body: String,
         actions: Vec<String>,
@@ -86,6 +125,7 @@ impl Server {
         let urgency = hint("urgency").and_then(|v| u8::try_from(v).ok());
         let resident = hint("resident").and_then(|v| bool::try_from(v).ok());
         let mut spec = spec(id, &app_name, summary, body, urgency, expire_timeout);
+        spec.image = self.image(id, &hints, &app_icon);
         spec.center_ms = self.emitter.config().timing.notification_center.as_millis() as u64;
         spec.actions = parse_actions(&actions);
         spec.keep_on_action = resident.unwrap_or(false);
@@ -138,6 +178,7 @@ fn spec(
     urgency: Option<u8>,
     expire_timeout: i32,
 ) -> ActivitySpec {
+    let (summary, body) = (plain_text(&summary), plain_text(&body));
     let title = if summary.is_empty() {
         app_name.to_owned()
     } else {
@@ -145,7 +186,9 @@ fn spec(
     };
     ActivitySpec {
         body: (!body.is_empty()).then(|| truncate(body)),
+        // Used when there's no picture (or it can't be loaded).
         icon: Some("bell".into()),
+        app: (!app_name.is_empty()).then(|| truncate(app_name.to_owned())),
         placement: Placement::Flow,
         priority: match urgency {
             Some(0) => Priority::Low,
@@ -155,6 +198,91 @@ fn spec(
         // -1 (server default) and 0 (never) both mean: stay until dismissed.
         ttl_ms: u64::try_from(expire_timeout).ok().filter(|&ms| ms > 0),
         ..ActivitySpec::new(activity_id(id), truncate(title))
+    }
+}
+
+/// Converts the spec's `(iiibiiay)` image (width, height, rowstride, has alpha, bits per
+/// sample, channels, data) to premultiplied RGBA.
+fn image_data(value: OwnedValue) -> Option<(u32, u32, Vec<u8>)> {
+    let (w, h, stride, _alpha, bits, channels, data): (i32, i32, i32, bool, i32, i32, Vec<u8>) =
+        value.try_into().ok()?;
+    let (w, h, stride, channels) = (
+        usize::try_from(w).ok()?,
+        usize::try_from(h).ok()?,
+        usize::try_from(stride).ok()?,
+        usize::try_from(channels).ok()?,
+    );
+    // Avatars and icons are small; refuse anything absurd.
+    if bits != 8 || !(3..=4).contains(&channels) || w == 0 || h == 0 || w * h > 1 << 20 {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        let row = data.get(y * stride..y * stride + w * channels)?;
+        for px in row.chunks_exact(channels) {
+            let a = if channels == 4 { px[3] } else { 255 };
+            let premul = |c: u8| ((u16::from(c) * u16::from(a) + 127) / 255) as u8;
+            rgba.extend_from_slice(&[premul(px[0]), premul(px[1]), premul(px[2]), a]);
+        }
+    }
+    Some((w as u32, h as u32, rgba))
+}
+
+/// Notification text as plain text: tags removed (`<b>`, `<a href=...>`, `<img .../>`),
+/// entities decoded. A `<` that doesn't start a tag (`a < b`) is kept.
+fn plain_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' if chars
+                .peek()
+                .is_some_and(|n| n.is_ascii_alphabetic() || matches!(n, '/' | '!')) =>
+            {
+                // Skip to the end of the tag.
+                for t in chars.by_ref() {
+                    if t == '>' {
+                        break;
+                    }
+                }
+            }
+            '&' => {
+                let rest: String = chars.clone().take(10).collect();
+                match rest
+                    .find(';')
+                    .and_then(|end| decode_entity(&rest[..end]).map(|c| (end, c)))
+                {
+                    Some((end, decoded)) => {
+                        out.push(decoded);
+                        for _ in 0..=end {
+                            chars.next();
+                        }
+                    }
+                    None => out.push('&'),
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out.trim().to_owned()
+}
+
+fn decode_entity(name: &str) -> Option<char> {
+    match name {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some('\u{a0}'),
+        _ => {
+            let number = name.strip_prefix('#')?;
+            let code = match number.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => number.parse().ok()?,
+            };
+            char::from_u32(code)
+        }
     }
 }
 
@@ -279,6 +407,51 @@ mod tests {
             (actions[1].key.as_str(), actions[1].label.as_str()),
             ("reply", "Reply")
         );
+    }
+
+    #[test]
+    fn markup_becomes_plain_text() {
+        assert_eq!(plain_text("<b>Bold</b> and <i>it</i>"), "Bold and it");
+        assert_eq!(
+            plain_text(r#"see <a href="https://x.y">the link</a>"#),
+            "see the link"
+        );
+        assert_eq!(
+            plain_text("Tom &amp; Jerry &lt;3 &#127829; &#x41;"),
+            "Tom & Jerry <3 🍕 A"
+        );
+        assert_eq!(plain_text("a < b && c"), "a < b && c");
+        assert_eq!(plain_text("<img src=\"x.png\"/>caption"), "caption");
+    }
+
+    #[test]
+    fn image_data_is_premultiplied_rgba() {
+        // 2x1 RGBA, rowstride 8: opaque red, half-transparent white.
+        let value = zbus::zvariant::Value::from((
+            2i32,
+            1i32,
+            8i32,
+            true,
+            8i32,
+            4i32,
+            vec![255u8, 0, 0, 255, 255, 255, 255, 128],
+        ));
+        let (w, h, rgba) = image_data(OwnedValue::try_from(value).unwrap()).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(rgba, [255, 0, 0, 255, 128, 128, 128, 128]);
+
+        // RGB with row padding.
+        let value = zbus::zvariant::Value::from((
+            1i32,
+            2i32,
+            4i32,
+            false,
+            8i32,
+            3i32,
+            vec![1u8, 2, 3, 0, 4, 5, 6, 0],
+        ));
+        let (_, _, rgba) = image_data(OwnedValue::try_from(value).unwrap()).unwrap();
+        assert_eq!(rgba, [1, 2, 3, 255, 4, 5, 6, 255]);
     }
 
     #[test]

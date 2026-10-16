@@ -83,6 +83,13 @@ pub struct ActivitySpec {
     /// Built-in icon name, e.g. `bell`, `volume`, `terminal` (see `dmsh icons`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// A picture shown instead of the icon: an image file path, an icon-theme name
+    /// (`firefox`), or an image registered by a source. Takes precedence over `icon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Who it's from (e.g. the app that sent a notification); shown when expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     /// Buttons, plus optionally a `default` action for clicking the activity itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
@@ -113,6 +120,8 @@ impl ActivitySpec {
             body: None,
             progress: None,
             icon: None,
+            image: None,
+            app: None,
             actions: Vec::new(),
             keep_on_action: false,
             placement: Placement::default(),
@@ -127,11 +136,11 @@ impl ActivitySpec {
             return Err("id must not be empty".into());
         }
         let too_long = |s: &str| s.len() > MAX_TEXT_LEN;
-        if too_long(&self.id) || too_long(&self.title) || self.body.as_deref().is_some_and(too_long)
-        {
-            return Err(format!(
-                "id, title and body are limited to {MAX_TEXT_LEN} bytes"
-            ));
+        let long_field = [&self.body, &self.image, &self.app]
+            .into_iter()
+            .any(|f| f.as_deref().is_some_and(too_long));
+        if too_long(&self.id) || too_long(&self.title) || long_field {
+            return Err(format!("text fields are limited to {MAX_TEXT_LEN} bytes"));
         }
         if self.actions.len() > MAX_ACTIONS {
             return Err(format!("at most {MAX_ACTIONS} actions"));
@@ -172,6 +181,11 @@ pub struct ActivityView {
     pub progress: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Renderer image key (resolved from the spec's `image`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
     pub priority: Priority,
@@ -183,8 +197,8 @@ impl ActivityView {
     }
 }
 
-/// Most right-island items carried in a view (the expanded list shows these).
-pub const RIGHT_ITEMS: usize = 6;
+/// Most right-island items carried in a view (the expanded list scrolls through these).
+pub const RIGHT_ITEMS: usize = 32;
 
 /// The right island: the newest items, newest first, and how many there are in total.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -223,6 +237,9 @@ pub struct View {
     /// Quick controls in the expanded right island.
     #[serde(default)]
     pub controls: Controls,
+    /// First list row shown in the expanded right island (UI state, per output).
+    #[serde(skip)]
+    pub right_scroll: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -248,6 +265,9 @@ pub struct Controls {
     pub wifi: Option<bool>,
     /// Idle (screen off, lock, suspend) is inhibited.
     pub keep_awake: bool,
+    /// Do not disturb: notifications go straight to the right island.
+    #[serde(default)]
+    pub dnd: bool,
 }
 
 /// A quick control in the expanded right island.
@@ -256,6 +276,8 @@ pub struct Controls {
 pub enum Control {
     Wifi,
     KeepAwake,
+    /// Do not disturb.
+    Dnd,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -320,10 +342,13 @@ impl Entry {
             .then(|| self.created + Duration::from_millis(self.spec.center_ms))
     }
 
-    fn island(&self, now: Instant) -> Island {
+    /// Where the activity is now. With `quiet` (do not disturb), `flow` activities skip
+    /// the center unless they're critical.
+    fn island(&self, now: Instant, quiet: bool) -> Island {
         match self.spec.placement {
             Placement::Center => Island::Center,
             Placement::Right => Island::Right,
+            Placement::Flow if quiet && self.spec.priority < Priority::Critical => Island::Right,
             Placement::Flow if self.moves_right_at().is_some_and(|t| now < t) => Island::Center,
             Placement::Flow => Island::Right,
         }
@@ -342,6 +367,8 @@ impl Entry {
             body: self.spec.body.clone(),
             progress: self.spec.progress,
             icon: self.spec.icon.clone(),
+            image: self.spec.image.clone(),
+            app: self.spec.app.clone(),
             actions: self.spec.actions.clone(),
             priority: self.spec.priority,
         }
@@ -353,9 +380,16 @@ impl Entry {
 #[derive(Clone, Debug, Default)]
 pub struct Activities {
     entries: Vec<Entry>,
+    /// Do not disturb.
+    quiet: bool,
 }
 
 impl Activities {
+    /// Turns do-not-disturb on or off.
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
+    }
+
     /// Creates or updates an activity.
     pub fn push(&mut self, mut spec: ActivitySpec, now: Instant) -> Result<(), String> {
         spec.validate()?;
@@ -389,11 +423,16 @@ impl Activities {
         has.then_some(entry.spec.keep_on_action)
     }
 
+    /// Image keys referenced by live activities (so unused images can be dropped).
+    pub fn image_keys(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().filter_map(|e| e.spec.image.as_deref())
+    }
+
     /// Removes everything currently on one island; returns the removed ids.
     pub fn clear_island(&mut self, island: Island, now: Instant) -> Vec<String> {
         let (removed, rest) = std::mem::take(&mut self.entries)
             .into_iter()
-            .partition(|e| e.island(now) == island);
+            .partition(|e| e.island(now, self.quiet) == island);
         self.entries = rest;
         removed.into_iter().map(|e: Entry| e.spec.id).collect()
     }
@@ -437,12 +476,14 @@ impl Activities {
         };
 
         let center = live()
-            .filter(|e| e.island(now) == Island::Center)
+            .filter(|e| e.island(now, self.quiet) == Island::Center)
             .filter(|e| focused || !e.is_transient())
             .max_by_key(|e| (e.spec.priority, e.is_transient(), e.updated))
             .map(Entry::view);
 
-        let mut right: Vec<&Entry> = live().filter(|e| e.island(now) == Island::Right).collect();
+        let mut right: Vec<&Entry> = live()
+            .filter(|e| e.island(now, self.quiet) == Island::Right)
+            .collect();
         // Newest first; a flow activity "arrives" on the right when it leaves the center.
         right.sort_by_key(|e| {
             std::cmp::Reverse(e.moves_right_at().unwrap_or(e.created).max(e.updated))
@@ -461,6 +502,7 @@ impl Activities {
             menu: None,
             battery: None,
             controls: Controls::default(),
+            right_scroll: 0,
         }
     }
 
@@ -469,7 +511,7 @@ impl Activities {
             .iter()
             .map(|e| ActivityState {
                 spec: e.spec.clone(),
-                island: e.island(now),
+                island: e.island(now, self.quiet),
                 age_ms: now.saturating_duration_since(e.created).as_millis() as u64,
                 expires_in_ms: e
                     .expires_at()
@@ -596,6 +638,27 @@ mod tests {
         a.push(spec("a", Placement::Right), t0).unwrap();
         assert_eq!(a.clear(), ["a"]);
         assert!(a.view(t0).right.is_none());
+    }
+
+    #[test]
+    fn quiet_sends_notifications_straight_right_except_critical() {
+        let t0 = Instant::now();
+        let mut a = Activities::default();
+        a.set_quiet(true);
+        a.push(spec("n", Placement::Flow), t0).unwrap();
+        assert_eq!(center_id(&a, t0), None);
+        assert_eq!(a.view(t0).right.unwrap().newest().id, "n");
+
+        let urgent = ActivitySpec {
+            priority: Priority::Critical,
+            ..spec("u", Placement::Flow)
+        };
+        a.push(urgent, t0).unwrap();
+        assert_eq!(center_id(&a, t0), Some("u".into()));
+
+        // Center-placed activities (OSDs, questions) are unaffected.
+        a.push(spec("osd", Placement::Center), t0).unwrap();
+        assert!(a.view(t0).center.is_some());
     }
 
     #[test]

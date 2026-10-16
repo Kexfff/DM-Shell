@@ -3,7 +3,7 @@
 //! host; otherwise dmsh runs the watcher itself. Item menus come over
 //! `com.canonical.dbusmenu` and are shown inside the right island.
 
-mod theme;
+pub mod theme;
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};

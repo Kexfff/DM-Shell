@@ -20,6 +20,8 @@ pub enum ImageSource {
 
 struct Entry {
     source: ImageSource,
+    /// Icon-like images get dark monochrome artwork tinted light; photos are left alone.
+    icon: bool,
     /// Rasterized at each pixel size it was drawn at; `None` if it failed to load.
     sized: HashMap<(u32, u32), Option<Pixmap>>,
 }
@@ -30,17 +32,28 @@ pub struct Images {
 }
 
 impl Images {
-    pub fn set(&mut self, key: &str, source: ImageSource) {
-        if self.entries.get(key).is_some_and(|e| e.source == source) {
+    /// Registers an image; `icon` marks artwork (tray, app icons) that may be tinted to
+    /// stay visible on the black islands, as opposed to photos such as avatars.
+    pub fn set(&mut self, key: &str, source: ImageSource, icon: bool) {
+        if self
+            .entries
+            .get(key)
+            .is_some_and(|e| e.source == source && e.icon == icon)
+        {
             return;
         }
         self.entries.insert(
             key.to_owned(),
             Entry {
                 source,
+                icon,
                 sized: HashMap::new(),
             },
         );
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
     }
 
     pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
@@ -63,8 +76,15 @@ impl Images {
             return;
         };
         let source = &entry.source;
+        let icon = entry.icon;
         let image = entry.sized.entry((w, h)).or_insert_with(|| {
-            let image = rasterize(source, w, h).map(lighten_if_dark_monochrome);
+            let image = rasterize(source, w, h).map(|image| {
+                if icon {
+                    lighten_if_dark_monochrome(image)
+                } else {
+                    image
+                }
+            });
             if image.is_none() {
                 log::debug!("could not load image {source:?}");
             }
@@ -206,6 +226,7 @@ mod tests {
                 height: 64,
                 data: Arc::new(red),
             },
+            false,
         );
         let mut target = Pixmap::new(40, 40).unwrap();
         images.draw("red", (4, 4, 28, 28), 1.0, &mut target.as_mut());

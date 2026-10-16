@@ -39,7 +39,7 @@ Successful replies are `{"ok": {"type": ...}}` with type `done`, `subscribed`,
 | `invoke` | `id`, `key` | Invoke an action as if clicked; dismisses unless `keep_on_action`. |
 | `state` | — | What the islands show and every live activity. |
 | `subscribe` | — | Keep the connection open and stream events (below). |
-| `control` | `control`: `"wifi"` or `"keep-awake"`, `state`: bool (optional, omitted = toggle) | Set a quick control. |
+| `control` | `control`: `"wifi"`, `"dnd"` or `"keep-awake"`, `state`: bool (optional, omitted = toggle) | Set a quick control. |
 | `toggle` | `island`: `"center"` or `"right"` | Open the island with keyboard focus, or close it. |
 | `reload` | — | Re-read the config file. |
 | `version` | — | The dmsh version. |
@@ -70,6 +70,8 @@ Successful replies are `{"ok": {"type": ...}}` with type `done`, `subscribed`,
 | `body` | — | Secondary text, shown when expanded. |
 | `progress` | — | 0.0–1.0 (clamped); draws a bar. |
 | `icon` | — | Built-in icon name; without one, a dot in the priority color. |
+| `image` | — | A picture shown instead of the icon: a PNG or SVG path (or `file://` URI), or an icon-theme name. Unusable images fall back to `icon`. |
+| `app` | — | Who it's from; shown above the title when expanded. |
 | `placement` | `flow` | `center`, `right`, or `flow` (center for `center_ms`, then right). |
 | `priority` | `normal` | `low`, `normal`, `high`, `critical`. |
 | `ttl_ms` | — | Lifetime after the **last** push; absent = until dismissed. |
@@ -80,6 +82,8 @@ Successful replies are `{"ok": {"type": ...}}` with type `done`, `subscribed`,
 Text fields are limited to 1024 bytes; at most 256 activities live at once.
 
 ### Which activity the center shows
+
+With do not disturb on, `flow` activities below `critical` skip the center entirely.
 
 1. Higher `priority` wins.
 2. At equal priority, transient activities (with a `ttl_ms`, or `flow`) beat persistent

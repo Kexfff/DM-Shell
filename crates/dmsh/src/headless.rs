@@ -34,6 +34,8 @@ pub struct Options {
     pub battery: Option<dmsh_core::BatteryView>,
     /// Wi-Fi quick control state; `None` hides it.
     pub wifi: Option<bool>,
+    /// Do not disturb.
+    pub dnd: bool,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -42,8 +44,15 @@ pub fn render(opts: Options) -> Result<()> {
     let mut pending = load_activities(opts.activities.as_deref())?;
     let background = opts.background.as_deref().map(parse_color).transpose()?;
 
+    let mut images = crate::images::ImageResolver::new();
+    for (_, spec) in &mut pending {
+        if let Some(image) = spec.image.take() {
+            spec.image = images.resolve(&image, &mut renderer);
+        }
+    }
     let t0 = Instant::now();
     let mut activities = Activities::default();
+    activities.set_quiet(opts.dnd);
     let mut stage = Stage::default();
     let mut last: Option<(View, Option<IslandKind>)> = None;
     let mut frames = Vec::new();
@@ -62,6 +71,7 @@ pub fn render(opts: Options) -> Result<()> {
             controls: dmsh_core::Controls {
                 wifi: opts.wifi,
                 keep_awake: false,
+                dnd: opts.dnd,
             },
             ..activities.view(now)
         };

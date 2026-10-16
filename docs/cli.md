@@ -28,6 +28,8 @@ dmsh activity push --id ID --title TITLE [options]
 | `--body TEXT` | — | Secondary text, shown when the island expands. |
 | `--progress 0.0–1.0` | — | A progress bar. |
 | `--icon NAME` | dot | A built-in icon (`dmsh icons`). |
+| `--image PATH\|NAME` | — | A picture instead of the icon: a PNG or SVG path, or an icon-theme name like `firefox`. Falls back to `--icon` if it can't be loaded. |
+| `--app NAME` | — | Who it's from, shown above the title when expanded. |
 | `--placement center\|right\|flow` | `flow` | `flow` shows in the center briefly, then moves to the right island. |
 | `--priority low\|normal\|high\|critical` | `normal` | Higher priority wins the center. |
 | `--ttl DURATION` | until dismissed | Removed this long after the last push, e.g. `1500ms`, `30s`, `5m`. |
@@ -49,6 +51,7 @@ dmsh activity push --id ID --title TITLE [options]
 |---|---|
 | `dmsh toggle center\|right` | Open the island on the focused monitor with keyboard focus, or close it. See [docs/niri.md](niri.md#keyboard-navigation). |
 | `dmsh control wifi [on\|off\|toggle]` | Turn the Wi-Fi radio on or off (NetworkManager). |
+| `dmsh control dnd [on\|off\|toggle]` | Do not disturb: notifications go straight to the right island; critical ones still show in the center. |
 | `dmsh control keep-awake [on\|off\|toggle]` | Keep the session from going idle (screen off, lock, suspend). |
 
 ## Config

@@ -44,6 +44,15 @@ pub enum Event {
     Battery(dmsh_core::BatteryView),
     /// Wi-Fi radio on/off; sent only when there is a Wi-Fi device.
     Wifi(bool),
+    /// Raw pixels an activity refers to as its `image` (`key`), e.g. a notification's
+    /// avatar. Premultiplied RGBA; `icon` marks artwork rather than a photo.
+    Image {
+        key: String,
+        width: u32,
+        height: u32,
+        rgba: Arc<Vec<u8>>,
+        icon: bool,
+    },
 }
 
 /// What the shell tells sources.

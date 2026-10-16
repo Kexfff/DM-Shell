@@ -17,6 +17,13 @@ dmsh activity push --id backup --title "Backup finished" --icon check --placemen
 The last push turns it into a notification-style item: center for two seconds, then
 the right island, gone after ten.
 
+Add `--app` to say who's talking and `--image` for a picture — an icon-theme name or a
+PNG/SVG path:
+
+```bash
+dmsh activity push --id ci --title "CI passed" --app GitHub --image /path/to/github.svg --placement flow
+```
+
 ## Notifying when something finishes
 
 ```bash
@@ -117,6 +124,7 @@ an extra `at_ms` field delays an entry:
 | `--pointer X,Y` | — | Pointer position, for hover highlights on buttons. |
 | `--battery 76` / `76+` | — | Show a battery (`+` = charging). |
 | `--wifi on\|off` | — | Show the Wi-Fi quick control. |
+| `--dnd` | off | Render with do not disturb on. |
 | `--width`, `--scale` | `1645`, `1.75` | Logical output width and scale. |
 | `--crop X,WIDTH` | — | Keep a logical x range. |
 | `--background #rrggbb` | transparent | Fill behind the islands. |

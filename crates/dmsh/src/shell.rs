@@ -113,6 +113,8 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         keep_awake: None,
         battery: None,
         wifi: None,
+        dnd: false,
+        images: crate::images::ImageResolver::new(),
         qh: qh.clone(),
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -198,6 +200,9 @@ pub struct Shell {
     battery: Option<BatteryView>,
     /// Wi-Fi radio state; `None` without a Wi-Fi device.
     wifi: Option<bool>,
+    /// Do not disturb.
+    dnd: bool,
+    images: crate::images::ImageResolver,
     qh: QueueHandle<Shell>,
     output_state: OutputState,
     compositor: CompositorState,
@@ -313,6 +318,10 @@ struct OutputSurface {
     hover: Option<IslandKind>,
     /// Opened from a keybind: stays expanded and takes the keyboard until closed.
     pinned: Option<IslandKind>,
+    /// First notification row shown in the expanded right island.
+    right_scroll: usize,
+    /// Touchpad scroll distance not yet turned into whole rows.
+    scroll_accum: f64,
     /// A frame callback is outstanding; the next draw happens when it fires.
     frame_pending: bool,
     /// Timestamp of the last animation frame, for frame-rate independent springs.
@@ -333,7 +342,12 @@ impl Shell {
         self.refresh();
         let now = Instant::now();
         let reply = match request {
-            Request::Push(spec) => self.activities.push(spec, now).map(|()| Reply::Done),
+            Request::Push(mut spec) => {
+                if let Some(image) = spec.image.take() {
+                    spec.image = self.images.resolve(&image, &mut self.renderer);
+                }
+                self.activities.push(spec, now).map(|()| Reply::Done)
+            }
             Request::Dismiss { id } => {
                 let existed = self.activities.dismiss(&id);
                 if existed {
@@ -408,6 +422,7 @@ impl Shell {
             controls: Controls {
                 wifi: self.wifi,
                 keep_awake: self.keep_awake.is_some(),
+                dnd: self.dnd,
             },
             ..self.activities.view_for(now, focused)
         };
@@ -455,6 +470,20 @@ impl Shell {
                 self.battery = Some(battery);
                 self.refresh();
             }
+            SourceEvent::Image {
+                key,
+                width,
+                height,
+                rgba,
+                icon,
+            } => {
+                let source = ImageSource::Rgba {
+                    width,
+                    height,
+                    data: rgba,
+                };
+                self.renderer.set_image(&key, source, icon);
+            }
             SourceEvent::Wifi(on) => {
                 self.wifi = Some(on);
                 self.refresh();
@@ -477,6 +506,7 @@ impl Shell {
 
     /// Tells subscribers and the owning source (e.g. to emit `NotificationClosed`).
     fn notify_removed(&mut self, id: String, reason: Removal) {
+        self.retain_images();
         self.broadcast(&Event::Removed {
             id: id.clone(),
             reason,
@@ -526,7 +556,7 @@ impl Shell {
                             (format!("file:{}", path.display()), ImageSource::File(path))
                         }
                     };
-                    self.renderer.set_image(&key, source);
+                    self.renderer.set_image(&key, source, true);
                     key
                 });
                 TrayIconView {
@@ -537,10 +567,33 @@ impl Shell {
                 }
             })
             .collect();
-        let keys: Vec<String> = self.tray.iter().filter_map(|t| t.image.clone()).collect();
+        self.retain_images();
+        self.refresh();
+    }
+
+    /// Scrolls an output's expanded notification list by `rows` (negative = newer).
+    fn scroll_right(&mut self, index: usize, rows: i32) {
+        let items = self
+            .views
+            .focused
+            .right
+            .as_ref()
+            .map_or(0, |r| r.items.len());
+        let max = items.saturating_sub(dmsh_core::LIST_ROWS);
+        let island = &mut self.islands[index];
+        let scroll = (island.right_scroll as i64 + i64::from(rows)).clamp(0, max as i64) as usize;
+        if scroll != island.right_scroll {
+            island.right_scroll = scroll;
+            self.update_stage(index);
+        }
+    }
+
+    /// Drops images nothing refers to any more (tray icons, activity pictures).
+    fn retain_images(&mut self) {
+        let mut keys: Vec<String> = self.tray.iter().filter_map(|t| t.image.clone()).collect();
+        keys.extend(self.activities.image_keys().map(str::to_owned));
         self.renderer
             .retain_images(|k| keys.iter().any(|key| key == k));
-        self.refresh();
     }
 
     /// Sets a quick control, or flips it when `state` is `None`.
@@ -556,6 +609,11 @@ impl Shell {
             Control::KeepAwake => {
                 let on = state.unwrap_or(self.keep_awake.is_none());
                 self.set_keep_awake(on)?;
+                self.refresh();
+            }
+            Control::Dnd => {
+                self.dnd = state.unwrap_or(!self.dnd);
+                self.activities.set_quiet(self.dnd);
                 self.refresh();
             }
         }
@@ -847,6 +905,10 @@ impl Shell {
                 return;
             }
             _ if button != BTN_LEFT => return,
+            Target::Scroll(delta) => {
+                self.scroll_right(index, delta);
+                return;
+            }
             Target::Control(control) => {
                 if let Err(e) = self.set_control(control, None) {
                     log::warn!("{e}");
@@ -893,6 +955,11 @@ impl Shell {
         } else {
             self.views.other.clone()
         };
+        let island = &mut self.islands[index];
+        if island.pinned.or(island.hover) != Some(IslandKind::Right) {
+            island.right_scroll = 0;
+        }
+        view.right_scroll = island.right_scroll;
         view.menu = self
             .menu
             .as_ref()
@@ -997,6 +1064,8 @@ impl Shell {
             stage: Stage::default(),
             hover: None,
             pinned: None,
+            right_scroll: 0,
+            scroll_accum: 0.0,
             frame_pending: false,
             last_frame_ms: None,
         });
@@ -1393,6 +1462,25 @@ impl PointerHandler for Shell {
                     }
                     self.set_pointer(index, None);
                     self.set_hover(index, None);
+                }
+                PointerEventKind::Axis { vertical, .. } => {
+                    let island = &mut self.islands[index];
+                    let expanded = island.pinned.or(island.hover) == Some(IslandKind::Right);
+                    if !expanded || island.stage.hit(x, y) != Some(IslandKind::Right) {
+                        continue;
+                    }
+                    // Wheels report notches; touchpads report distance.
+                    let rows = if vertical.discrete != 0 {
+                        vertical.discrete
+                    } else {
+                        island.scroll_accum += vertical.absolute;
+                        let rows = (island.scroll_accum / 24.0).trunc();
+                        island.scroll_accum -= rows * 24.0;
+                        rows as i32
+                    };
+                    if rows != 0 {
+                        self.scroll_right(index, rows);
+                    }
                 }
                 PointerEventKind::Press { button, .. } => {
                     if let Some(target) = self.islands[index].stage.target_at(x, y) {

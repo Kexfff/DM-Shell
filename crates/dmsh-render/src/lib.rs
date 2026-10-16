@@ -37,8 +37,14 @@ impl Renderer {
     }
 
     /// Registers (or replaces) an image that scenes can draw by `key`.
-    pub fn set_image(&mut self, key: &str, source: ImageSource) {
-        self.images.set(key, source);
+    /// Registers (or replaces) an image that scenes can draw by `key`. `icon` marks
+    /// artwork that may be tinted light to show on the black islands (not photos).
+    pub fn set_image(&mut self, key: &str, source: ImageSource, icon: bool) {
+        self.images.set(key, source, icon);
+    }
+
+    pub fn has_image(&self, key: &str) -> bool {
+        self.images.contains(key)
     }
 
     /// Forgets images whose keys aren't kept.
