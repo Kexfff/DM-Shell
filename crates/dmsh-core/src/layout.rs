@@ -830,9 +830,7 @@ fn controls_row(
         control_button(icon, on, rect, control, theme, draws, hits);
         x += size + gap;
     }
-    let rect = Rect::new(x, y, size, size);
-    round_button("power", rect, Target::SessionMenu(true), theme, draws, hits);
-    x + size
+    x - gap
 }
 
 /// A tray icon centered in `slot`, or a dot when the app gave no usable icon.
@@ -1008,13 +1006,22 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         controls_row(&view.controls, y, theme, &mut draws, &mut hits)
     };
     let tray: &[TrayIconView] = if session { &[] } else { tray };
+    // The power button sits at the far right, out of the way of the controls; its hit
+    // goes in after the tray's so keyboard order follows the row.
+    let mut power_hit = Vec::new();
     let mut right_edge = w - 14.0;
+    if !session {
+        let rect = Rect::new(w - 10.0 - row, y, row, row);
+        let target = Target::SessionMenu(true);
+        round_button("power", rect, target, theme, &mut draws, &mut power_hit);
+        right_edge = rect.x - 10.0;
+    }
     if let Some(battery) = view.battery.as_ref().filter(|_| !session) {
         let style = TextStyle::new(12.5, Weight::Semibold);
         let charging = if battery.charging { " · Charging" } else { "" };
         let label = format!("{}%{charging}", battery.percent);
         let (t, tw, th) = text(m, &label, style, theme.text, 160.0, 1);
-        let tx = w - 14.0 - tw;
+        let tx = right_edge - tw;
         draws.push(place(t, tx, y + (row - th) / 2.0));
         let size = 22.0;
         let icon_rect = Rect::new(tx - size - 4.0, y + (row - size) / 2.0, size, size);
@@ -1027,6 +1034,8 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     let (tray_x, tray_y) = if inline {
         (inline_x, y + (row - slot) / 2.0)
     } else {
+        // Tray on its own row below: the power button comes first.
+        hits.append(&mut power_hit);
         (8.0, y + row + 6.0)
     };
     for (i, item) in tray.iter().enumerate() {
@@ -1041,6 +1050,7 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
             keyboard: true,
         });
     }
+    hits.append(&mut power_hit);
     y += row + 10.0;
     if !inline && !tray.is_empty() {
         y += slot + 6.0;
@@ -1402,6 +1412,12 @@ pub(crate) mod tests {
         assert_eq!(targets[0], Target::Control(Control::Dnd));
         assert_eq!(targets[1], Target::Control(Control::KeepAwake));
         assert_eq!(targets[2], Target::SessionMenu(true));
+        let power = list.hits[2].rect;
+        assert_eq!(
+            power.right(),
+            theme.right_expanded_width - 10.0,
+            "far right"
+        );
         assert_eq!(targets[3], Target::Dismiss { id: "a".into() });
         assert_eq!(targets.last(), Some(&Target::ClearRight));
         assert_eq!(targets.len(), 8);
