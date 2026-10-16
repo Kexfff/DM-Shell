@@ -419,6 +419,18 @@ impl Stage {
         self.selection != current
     }
 
+    /// Moves the keyboard selection to `target`, if the navigated island has it.
+    pub fn select(&mut self, target: &Target) -> bool {
+        let found = self
+            .keyboard_hits()
+            .iter()
+            .position(|(_, hit)| hit.target == *target);
+        if let Some(i) = found {
+            self.selection = i;
+        }
+        found.is_some()
+    }
+
     /// What Enter would do.
     pub fn selected_target(&self) -> Option<Target> {
         self.selected_hit().map(|(_, hit)| hit.target)
@@ -576,9 +588,11 @@ fn push_island(
     let (dx, dy) = content_offset(rect, content);
     let mut items: Vec<Draw> = highlight
         .map(|r| {
+            // Buttons are pills, so their highlight is too; list rows get soft corners.
+            let radius = if r.h <= 40.0 { r.h / 2.0 } else { 10.0 };
             Draw::Rect(RoundRect {
                 rect: r,
-                radius: 10.0,
+                radius,
                 color: theme.highlight,
             })
         })
@@ -786,10 +800,13 @@ mod tests {
         let v = view(None, &items);
         update(&mut stage, &v, Some(IslandKind::Right));
         stage.set_keyboard(Some(IslandKind::Right));
-        // DND, keep awake, rows a, b, then "Clear all"; close buttons are skipped.
+        // DND, keep awake, power, rows a, b, then "Clear all"; close buttons are skipped.
         let dnd = Target::Control(crate::activity::Control::Dnd);
         assert_eq!(stage.selected_target(), Some(dnd.clone()));
-        assert!(stage.move_selection(2));
+        assert!(stage.select(&Target::SessionMenu(true)));
+        assert_eq!(stage.selected_target(), Some(Target::SessionMenu(true)));
+        assert!(!stage.select(&Target::MenuBack), "not in this island");
+        assert!(stage.move_selection(1));
         assert_eq!(
             stage.selected_target(),
             Some(Target::Dismiss { id: "a".into() })

@@ -35,7 +35,9 @@ Both are solid black, Apple-style pills (the first and default theme).
   orange when low, red when critical, green bolt while charging). Shows the newest item
   plus a `+N` counter; expands into a header row — round icon buttons for the **quick
   controls** (Wi-Fi on/off via NetworkManager, "Keep awake" via the Wayland idle-inhibit
-  protocol), tray icons, battery — and the list. Dark monochrome tray icons (from icon
+  protocol), a power button for the **session menu** (Shut down, Reboot, Log out —
+  each runs only when held until it fills, ~0.8 s, mouse or Enter; commands
+  configurable), tray icons, battery — and the list. Dark monochrome tray icons (from icon
   themes made for light panels) are tinted light so they show on the black pill.
   Critical battery also takes the center until charging. **Do not disturb** sends `flow`
   activities below critical straight to the right island (a moon shows there). The list

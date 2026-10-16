@@ -6,7 +6,7 @@
 
 use crate::activity::{
     Action, ActivityView, BatteryLevel, BatteryView, Control, Controls, DEFAULT_ACTION, MenuView,
-    Priority, TrayIconView, View,
+    Priority, SessionAction, TrayIconView, View,
 };
 
 /// Axis-aligned rectangle in logical pixels.
@@ -307,6 +307,10 @@ pub enum Target {
     },
     MenuBack,
     Control(Control),
+    /// Open (`true`) or close the session menu.
+    SessionMenu(bool),
+    /// A session menu option: runs when held down long enough, not on a click.
+    Session(SessionAction),
     /// Scroll the expanded right island's list by this many rows.
     Scroll(i32),
 }
@@ -718,6 +722,92 @@ fn control_button(
     });
 }
 
+/// A round, icon-only button that isn't a toggle.
+fn round_button(
+    icon_name: &str,
+    rect: Rect,
+    target: Target,
+    theme: &Theme,
+    draws: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) {
+    draws.push(Draw::Rect(RoundRect::pill(rect, theme.button)));
+    let size = 18.0;
+    draws.push(Draw::Icon(IconDraw {
+        name: icon_name.into(),
+        rect: Rect::new(
+            rect.x + (rect.w - size) / 2.0,
+            rect.y + (rect.h - size) / 2.0,
+            size,
+            size,
+        ),
+        color: theme.text,
+    }));
+    hits.push(Hit {
+        rect,
+        target,
+        highlight: true,
+        keyboard: true,
+    });
+}
+
+/// The session menu in place of the controls row: a back button, then one pill per
+/// option that fills up while it's held.
+fn session_row(
+    controls: &Controls,
+    y: f32,
+    w: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    draws: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) {
+    let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
+    let back = Rect::new(pad, y, size, size);
+    round_button(
+        "chevron-left",
+        back,
+        Target::SessionMenu(false),
+        theme,
+        draws,
+        hits,
+    );
+    let n = SessionAction::ALL.len() as f32;
+    let x0 = back.right() + gap;
+    let pill_w = (w - pad - x0 - gap * (n - 1.0)) / n;
+    let fill = theme.priority_color(Priority::Critical);
+    for (i, action) in SessionAction::ALL.into_iter().enumerate() {
+        let rect = Rect::new(x0 + i as f32 * (pill_w + gap), y, pill_w, size);
+        draws.push(Draw::Rect(RoundRect::pill(rect, theme.button)));
+        if let Some((held, progress)) = controls.session_hold
+            && held == action
+            && progress > 0.0
+        {
+            // Starts as a circle at the left end (fading in) and grows to the full pill.
+            let p = progress.min(1.0);
+            let alpha = (fill.a as f32 * (p * 6.0).min(1.0)) as u8;
+            let grown = Rect::new(rect.x, rect.y, size + (rect.w - size) * p, size);
+            draws.push(Draw::Rect(RoundRect::pill(
+                grown,
+                Color { a: alpha, ..fill },
+            )));
+        }
+        let style = TextStyle::new(12.5, Weight::Semibold);
+        let (t, tw, th) = text(m, action.label(), style, theme.text, pill_w - 12.0, 1);
+        draws.push(place(
+            t,
+            rect.x + (rect.w - tw.min(pill_w - 12.0)) / 2.0,
+            y + (size - th) / 2.0,
+        ));
+        hits.push(Hit {
+            rect,
+            target: Target::Session(action),
+            highlight: true,
+            keyboard: true,
+        });
+    }
+}
+
 /// Round icon buttons for the quick controls, from the left at `y`; returns where they end.
 fn controls_row(
     controls: &Controls,
@@ -740,7 +830,9 @@ fn controls_row(
         control_button(icon, on, rect, control, theme, draws, hits);
         x += size + gap;
     }
-    x - gap
+    let rect = Rect::new(x, y, size, size);
+    round_button("power", rect, Target::SessionMenu(true), theme, draws, hits);
+    x + size
 }
 
 /// A tray icon centered in `slot`, or a dot when the app gave no usable icon.
@@ -907,9 +999,17 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     // (on their own row when they don't fit).
     let mut y = 10.0;
     let row = CONTROL_SIZE;
-    let controls_end = controls_row(&view.controls, y, theme, &mut draws, &mut hits);
+    // The session menu takes the whole row while it's open.
+    let session = view.controls.session_open;
+    let controls_end = if session {
+        session_row(&view.controls, y, w, theme, m, &mut draws, &mut hits);
+        w
+    } else {
+        controls_row(&view.controls, y, theme, &mut draws, &mut hits)
+    };
+    let tray: &[TrayIconView] = if session { &[] } else { tray };
     let mut right_edge = w - 14.0;
-    if let Some(battery) = &view.battery {
+    if let Some(battery) = view.battery.as_ref().filter(|_| !session) {
         let style = TextStyle::new(12.5, Weight::Semibold);
         let charging = if battery.charging { " · Charging" } else { "" };
         let label = format!("{}%{charging}", battery.percent);
@@ -1064,7 +1164,7 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         h: y + 8.0,
         items: draws,
         hits,
-        key: "r:list".into(),
+        key: if session { "r:list:session" } else { "r:list" }.into(),
     }
 }
 
@@ -1297,13 +1397,14 @@ pub(crate) mod tests {
         assert!(compact.w > single.w, "+1 badge adds width");
 
         let list = right_content(&view(None, &items), true, &theme, &mut m).unwrap();
-        // DND, keep awake, close button, row, close button, row, clear all.
+        // DND, keep awake, power, close button, row, close button, row, clear all.
         let targets: Vec<_> = list.hits.iter().map(|h| h.target.clone()).collect();
         assert_eq!(targets[0], Target::Control(Control::Dnd));
         assert_eq!(targets[1], Target::Control(Control::KeepAwake));
-        assert_eq!(targets[2], Target::Dismiss { id: "a".into() });
+        assert_eq!(targets[2], Target::SessionMenu(true));
+        assert_eq!(targets[3], Target::Dismiss { id: "a".into() });
         assert_eq!(targets.last(), Some(&Target::ClearRight));
-        assert_eq!(targets.len(), 7);
+        assert_eq!(targets.len(), 8);
         assert!(right_content(&view(None, &[]), false, &theme, &mut m).is_none());
         // Expanded still offers the quick controls.
         assert!(right_content(&view(None, &[]), true, &theme, &mut m).is_some());
@@ -1480,6 +1581,7 @@ pub(crate) mod tests {
         let without = right_content(&v, true, &theme, &mut m).unwrap();
         let dnd = Target::Control(Control::Dnd);
         let awake = Target::Control(Control::KeepAwake);
+        // (The power button opens a menu; it isn't a control.)
         assert_eq!(controls(&without), [dnd.clone(), awake.clone()]);
         v.controls.wifi = Some(true);
         let with = right_content(&v, true, &theme, &mut m).unwrap();
@@ -1487,6 +1589,57 @@ pub(crate) mod tests {
             controls(&with),
             [Target::Control(Control::Wifi), dnd, awake]
         );
+    }
+
+    #[test]
+    fn session_menu_replaces_the_controls_row() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[activity("a", None)]);
+        v.battery = Some(BatteryView {
+            percent: 50,
+            charging: false,
+            level: BatteryLevel::Normal,
+        });
+        v.controls.session_open = true;
+        let open = right_content(&v, true, &theme, &mut m).unwrap();
+        let targets: Vec<_> = open.hits.iter().map(|h| h.target.clone()).collect();
+        assert_eq!(
+            targets[..4],
+            [
+                Target::SessionMenu(false),
+                Target::Session(SessionAction::Poweroff),
+                Target::Session(SessionAction::Reboot),
+                Target::Session(SessionAction::Logout),
+            ]
+        );
+        assert!(!targets.iter().any(|t| matches!(t, Target::Control(_))));
+        // The options share the row up to the island's padding.
+        let last = &open.hits[3].rect;
+        assert!((last.right() - (theme.right_expanded_width - 10.0)).abs() < 0.5);
+        let closed_key = {
+            v.controls.session_open = false;
+            right_content(&v, true, &theme, &mut m).unwrap().key
+        };
+        assert_ne!(open.key, closed_key, "opening cross-fades");
+
+        // Holding fills the option in the critical color; the key doesn't change.
+        v.controls.session_open = true;
+        v.controls.session_hold = Some((SessionAction::Reboot, 0.5));
+        let held = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(held.key, open.key);
+        let red = theme.priority_color(Priority::Critical);
+        let fill = held
+            .items
+            .iter()
+            .find_map(|d| match d {
+                Draw::Rect(r) if r.color.r == red.r && r.color.g == red.g => Some(r.rect),
+                _ => None,
+            })
+            .expect("fill");
+        let reboot = held.hits[2].rect;
+        assert_eq!(fill.x, reboot.x);
+        assert!(fill.w > CONTROL_SIZE && fill.w < reboot.w);
     }
 
     #[test]

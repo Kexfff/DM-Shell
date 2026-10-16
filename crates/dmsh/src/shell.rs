@@ -4,12 +4,12 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use dmsh_core::{
     Activities, ActivitySpec, BatteryView, Control, Controls, IslandKind, MenuEntryView, MenuView,
-    Placement, Priority, Stage, Target, Theme, TrayIconView, View,
+    Placement, Priority, SessionAction, Stage, Target, Theme, TrayIconView, View,
     activity::Island,
     config::{Config, ConfigError},
     ipc::{Event, Reply, Request, Response, StateDump},
@@ -127,6 +127,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         config,
         config_path: config_path.clone(),
         reload_timer: None,
+        hold_timer: None,
         islands: Vec::new(),
         activities: Activities::default(),
         views: Views::default(),
@@ -181,6 +182,8 @@ pub struct Shell {
     shared_config: Arc<RwLock<Config>>,
     config_path: Option<PathBuf>,
     reload_timer: Option<RegistrationToken>,
+    /// Ticks while a session menu option is held, to animate the fill and fire at the end.
+    hold_timer: Option<RegistrationToken>,
     registry_state: RegistryState,
     seat_state: SeatState,
     pointer: Option<wl_pointer::WlPointer>,
@@ -325,11 +328,23 @@ struct OutputSurface {
     right_scroll: usize,
     /// Touchpad scroll distance not yet turned into whole rows.
     scroll_accum: f64,
+    /// The session menu, open in the expanded right island.
+    session: SessionMenu,
     /// A frame callback is outstanding; the next draw happens when it fires.
     frame_pending: bool,
     /// Timestamp of the last animation frame, for frame-rate independent springs.
     last_frame_ms: Option<u32>,
 }
+
+/// The session menu on one output, and the option being held down, since when.
+#[derive(Default)]
+struct SessionMenu {
+    open: bool,
+    hold: Option<(SessionAction, Instant)>,
+}
+
+/// How often the hold fill is redrawn.
+const HOLD_TICK: Duration = Duration::from_millis(16);
 
 impl Drop for OutputSurface {
     fn drop(&mut self) {
@@ -426,6 +441,7 @@ impl Shell {
                 wifi: self.wifi,
                 keep_awake: self.keep_awake.is_some(),
                 dnd: self.dnd,
+                ..Controls::default()
             },
             ..self.activities.view_for(now, focused)
         };
@@ -722,6 +738,8 @@ impl Shell {
             Keysym::Escape => {
                 if self.menu.as_ref().is_some_and(|m| m.output == index) {
                     self.close_menu();
+                } else if island.session.open {
+                    self.click(index, Target::SessionMenu(false), BTN_LEFT);
                 } else {
                     self.unpin(index);
                 }
@@ -934,6 +952,25 @@ impl Shell {
                 }
                 return;
             }
+            Target::SessionMenu(open) => {
+                self.islands[index].session = SessionMenu { open, hold: None };
+                self.update_stage(index);
+                // Keep the keyboard selection on the same spot: the first option when
+                // opening, the power button when going back.
+                let select = match open {
+                    true => Target::Session(SessionAction::Poweroff),
+                    false => Target::SessionMenu(true),
+                };
+                let island = &mut self.islands[index];
+                if island.stage.select(&select) && !island.frame_pending {
+                    self.draw(index);
+                }
+                return;
+            }
+            Target::Session(action) => {
+                self.start_hold(index, action);
+                return;
+            }
             Target::Invoke { id, key } => Request::Invoke { id, key },
             Target::Dismiss { id } => Request::Dismiss { id },
             Target::ClearRight => Request::Clear {
@@ -942,6 +979,75 @@ impl Shell {
         };
         if let Response::Error(e) = self.handle(request) {
             log::warn!("click failed: {e}");
+        }
+    }
+
+    /// Starts filling a session menu option; it runs if still held when full.
+    fn start_hold(&mut self, index: usize, action: SessionAction) {
+        self.islands[index].session.hold = Some((action, Instant::now()));
+        self.update_stage(index);
+        if self.hold_timer.is_some() {
+            return;
+        }
+        let timer = Timer::from_duration(HOLD_TICK);
+        let token = self.loop_handle.insert_source(timer, |_, _, shell| {
+            if shell.tick_holds() {
+                TimeoutAction::ToDuration(HOLD_TICK)
+            } else {
+                shell.hold_timer = None;
+                TimeoutAction::Drop
+            }
+        });
+        self.hold_timer = token.ok();
+    }
+
+    /// Let go before the option filled up: nothing happens.
+    fn cancel_hold(&mut self, index: usize) {
+        if self.islands[index].session.hold.take().is_some() {
+            self.update_stage(index);
+        }
+    }
+
+    /// Redraws held options and runs the ones held long enough; returns whether any
+    /// are still held.
+    fn tick_holds(&mut self) -> bool {
+        let mut holding = false;
+        for index in 0..self.islands.len() {
+            let Some((action, since)) = self.islands[index].session.hold else {
+                continue;
+            };
+            if since.elapsed() >= self.config.session.hold {
+                self.islands[index].session = SessionMenu::default();
+                self.unpin(index);
+                self.update_stage(index);
+                self.run_session(action);
+            } else {
+                holding = true;
+                self.update_stage(index);
+            }
+        }
+        holding
+    }
+
+    fn run_session(&self, action: SessionAction) {
+        let command = self.config.session.command(action).to_owned();
+        log::info!("{}: {command}", action.label());
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .spawn();
+        match child {
+            // Reap it off the main thread; logout and poweroff may take a while to return.
+            Ok(mut child) => {
+                std::thread::spawn(move || match child.wait() {
+                    Ok(status) if !status.success() => {
+                        log::warn!("`{command}` exited with {status}")
+                    }
+                    Err(e) => log::warn!("`{command}`: {e}"),
+                    Ok(_) => {}
+                });
+            }
+            Err(e) => log::warn!("running `{command}`: {e}"),
         }
     }
 
@@ -977,8 +1083,14 @@ impl Shell {
         let island = &mut self.islands[index];
         if island.pinned.or(island.hover) != Some(IslandKind::Right) {
             island.right_scroll = 0;
+            island.session = SessionMenu::default();
         }
         view.right_scroll = island.right_scroll;
+        view.controls.session_open = island.session.open;
+        view.controls.session_hold = island.session.hold.map(|(action, since)| {
+            let hold = self.config.session.hold.as_secs_f32().max(0.001);
+            (action, since.elapsed().as_secs_f32() / hold)
+        });
         view.menu = self
             .menu
             .as_ref()
@@ -1085,6 +1197,7 @@ impl Shell {
             pinned: None,
             right_scroll: 0,
             scroll_accum: 0.0,
+            session: SessionMenu::default(),
             frame_pending: false,
             last_frame_ms: None,
         });
@@ -1431,8 +1544,16 @@ impl KeyboardHandler for Shell {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        if let Some(index) = self.keyboard_focus
+            && matches!(
+                event.keysym,
+                Keysym::Return | Keysym::KP_Enter | Keysym::space
+            )
+        {
+            self.cancel_hold(index);
+        }
     }
 
     fn update_modifiers(
@@ -1471,6 +1592,13 @@ impl PointerHandler for Shell {
                     self.set_pointer(index, Some((x, y)));
                 }
                 PointerEventKind::Motion { .. } => {
+                    // Sliding off the held option cancels it.
+                    if let Some((action, _)) = self.islands[index].session.hold
+                        && self.islands[index].stage.target_at(x, y)
+                            != Some(Target::Session(action))
+                    {
+                        self.cancel_hold(index);
+                    }
                     let hover = self.islands[index].stage.hit(x, y);
                     self.set_hover(index, hover);
                     self.set_pointer(index, Some((x, y)));
@@ -1479,6 +1607,7 @@ impl PointerHandler for Shell {
                     if self.menu.as_ref().is_some_and(|m| m.output == index) {
                         self.close_menu();
                     }
+                    self.cancel_hold(index);
                     self.set_pointer(index, None);
                     self.set_hover(index, None);
                 }
@@ -1505,6 +1634,9 @@ impl PointerHandler for Shell {
                     if let Some(target) = self.islands[index].stage.target_at(x, y) {
                         self.click(index, target, button);
                     }
+                }
+                PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    self.cancel_hold(index);
                 }
                 _ => {}
             }

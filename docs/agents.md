@@ -137,6 +137,7 @@ an extra `at_ms` field delays an entry:
 | `--battery 76` / `76+` | — | Show a battery (`+` = charging). |
 | `--wifi on\|off` | — | Show the Wi-Fi quick control. |
 | `--dnd` | off | Render with do not disturb on. |
+| `--session [ACTION:PROGRESS]` | closed | Show the session menu open, e.g. `--session reboot:0.6` with Reboot held 60% of the way. |
 | `--width`, `--scale` | `1645`, `1.75` | Logical output width and scale. |
 | `--crop X,WIDTH` | — | Keep a logical x range. |
 | `--background #rrggbb` | transparent | Fill behind the islands. |

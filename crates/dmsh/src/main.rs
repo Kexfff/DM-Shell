@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use dmsh_core::{
-    Action, ActivitySpec, Control, IslandKind, Placement, Priority,
+    Action, ActivitySpec, Control, IslandKind, Placement, Priority, SessionAction,
     activity::Island,
     ipc::{Reply, Request, Response},
 };
@@ -138,6 +138,10 @@ enum Command {
         /// Render with do not disturb on.
         #[arg(long)]
         dnd: bool,
+        /// Show the session menu open, optionally with an option held part way,
+        /// e.g. `--session reboot:0.6`.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        session: Option<String>,
     },
 }
 
@@ -356,7 +360,13 @@ fn main() -> Result<()> {
             battery,
             wifi,
             dnd,
+            session,
         } => headless::render(headless::Options {
+            session: session
+                .as_deref()
+                .map(parse_session)
+                .transpose()
+                .map_err(anyhow::Error::msg)?,
             dnd,
             battery: battery.as_deref().map(parse_battery).transpose()?,
             wifi: wifi.map(|w| w == "on"),
@@ -463,6 +473,19 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 /// Parses `76` or `76+` (charging).
+fn parse_session(s: &str) -> Result<Option<(SessionAction, f32)>, String> {
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let (action, progress) = s.split_once(':').unwrap_or((s, "0"));
+    let action = serde_json::from_value(serde_json::Value::String(action.into()))
+        .map_err(|_| format!("`{action}` isn't poweroff, reboot or logout"))?;
+    let progress: f32 = progress
+        .parse()
+        .map_err(|_| format!("`{progress}` isn't a number from 0 to 1"))?;
+    Ok(Some((action, progress.clamp(0.0, 1.0))))
+}
+
 fn parse_battery(s: &str) -> Result<dmsh_core::BatteryView> {
     let (number, charging) = match s.strip_suffix('+') {
         Some(n) => (n, true),

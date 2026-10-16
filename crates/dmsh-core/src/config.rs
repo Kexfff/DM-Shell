@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
 
+use crate::activity::SessionAction;
 use crate::layout::{Color, Theme};
 
 /// The documented default config, printed by `dmsh config default`.
@@ -24,6 +25,26 @@ pub struct Config {
     pub outputs: Outputs,
     pub sources: Sources,
     pub timing: Timing,
+    pub session: Session,
+}
+
+/// The session menu: how long to hold an option, and the commands it runs (via `sh -c`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Session {
+    pub hold: Duration,
+    pub poweroff: String,
+    pub reboot: String,
+    pub logout: String,
+}
+
+impl Session {
+    pub fn command(&self, action: SessionAction) -> &str {
+        match action {
+            SessionAction::Poweroff => &self.poweroff,
+            SessionAction::Reboot => &self.reboot,
+            SessionAction::Logout => &self.logout,
+        }
+    }
 }
 
 /// strftime formats for the idle clock and the expanded date.
@@ -100,6 +121,12 @@ impl Default for Config {
                 status: Duration::from_secs(4),
                 notification_center: Duration::from_secs(2),
             },
+            session: Session {
+                hold: Duration::from_millis(800),
+                poweroff: "systemctl poweroff".into(),
+                reboot: "systemctl reboot".into(),
+                logout: "niri msg action quit --skip-confirmation".into(),
+            },
         }
     }
 }
@@ -143,6 +170,7 @@ impl Config {
                 "outputs" => p.outputs(node, &mut config.outputs)?,
                 "sources" => p.sources(node, &mut config.sources)?,
                 "timing" => p.timing(node, &mut config.timing)?,
+                "session" => p.session(node, &mut config.session)?,
                 other => return Err(p.error(node, format!("unknown section `{other}`"))),
             }
         }
@@ -383,6 +411,23 @@ impl Parser<'_> {
         }
         Ok(())
     }
+
+    fn session(&self, section: &KdlNode, session: &mut Session) -> Result<(), ConfigError> {
+        for node in self.children(section) {
+            let slot = match node.name().value() {
+                "hold" => {
+                    session.hold = self.duration(node)?;
+                    continue;
+                }
+                "poweroff" => &mut session.poweroff,
+                "reboot" => &mut session.reboot,
+                "logout" => &mut session.logout,
+                other => return Err(self.error(node, format!("unknown session option `{other}`"))),
+            };
+            *slot = self.string(node)?;
+        }
+        Ok(())
+    }
 }
 
 /// Parses `#rrggbb` or `#rrggbbaa`.
@@ -424,6 +469,7 @@ mod tests {
             outputs { except "HDMI-A-1"; }
             sources { tray #false; }
             timing { osd "900ms"; }
+            session { hold "1s"; logout "loginctl terminate-session self"; }
         "##;
         let c = Config::parse(v2).unwrap();
         assert_eq!(c.font.as_deref(), Some("Geist"));
@@ -435,6 +481,12 @@ mod tests {
         assert!(!c.outputs.wants(Some("HDMI-A-1")) && c.outputs.wants(Some("eDP-1")));
         assert!(!c.sources.tray && c.sources.media);
         assert_eq!(c.timing.osd, Duration::from_millis(900));
+        assert_eq!(c.session.hold, Duration::from_secs(1));
+        assert_eq!(
+            c.session.command(SessionAction::Logout),
+            "loginctl terminate-session self"
+        );
+        assert_eq!(c.session.reboot, "systemctl reboot");
 
         let v1 = "sources {\n    tray false\n}\n";
         assert!(!Config::parse(v1).unwrap().sources.tray);

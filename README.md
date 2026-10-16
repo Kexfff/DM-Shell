@@ -31,6 +31,8 @@ AI agents can put things on the islands and wait for answers.
 - **Battery** always on the right island; a critical battery also takes the center.
 - **Quick controls**: Wi-Fi on/off, do not disturb (notifications skip the center unless
   critical) and "Keep awake".
+- **Session menu**: the power button opens Shut down · Reboot · Log out; hold one until
+  it fills to run it, so a stray click never logs you out.
 - **niri integration**: focused-monitor awareness, keyboard-layout and screencast
   indicators, keybind toggles with full keyboard navigation.
 - **Hover to expand**, click to act; spring animations throughout.

@@ -258,7 +258,7 @@ pub enum BatteryLevel {
     Critical,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Controls {
     /// Wi-Fi radio on/off; `None` when there is no Wi-Fi device (or NetworkManager).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +268,37 @@ pub struct Controls {
     /// Do not disturb: notifications go straight to the right island.
     #[serde(default)]
     pub dnd: bool,
+    /// The session menu (shut down, reboot, log out) is open in place of the controls.
+    #[serde(skip)]
+    pub session_open: bool,
+    /// The option being held, and how far along (0.0 to 1.0).
+    #[serde(skip)]
+    pub session_hold: Option<(SessionAction, f32)>,
+}
+
+/// What the session menu can do; each runs a configurable command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionAction {
+    Poweroff,
+    Reboot,
+    Logout,
+}
+
+impl SessionAction {
+    pub const ALL: [SessionAction; 3] = [
+        SessionAction::Poweroff,
+        SessionAction::Reboot,
+        SessionAction::Logout,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SessionAction::Poweroff => "Shut down",
+            SessionAction::Reboot => "Reboot",
+            SessionAction::Logout => "Log out",
+        }
+    }
 }
 
 /// A quick control in the expanded right island.

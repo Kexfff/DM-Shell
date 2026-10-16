@@ -43,11 +43,14 @@ keep it expanded, and take keyboard focus. Running the same toggle again closes 
 | Enter, Space | Activate (button, notification, toggle, tray icon, menu entry) |
 | Delete, Backspace, `d` | Dismiss the selected notification |
 | `m`, Menu | Open the selected tray icon's menu |
-| Esc | Close the menu, then the island |
+| Esc | Close the menu (tray or session), then the island |
 
 Activating something that hands focus to an app — opening a notification, a tray app,
 a menu entry, a center button — closes the island, so the app gets the keyboard.
 Toggles, dismissals and "Clear all" keep it open.
+
+Session menu options (behind the power button) run only while Enter is **held** until
+the option fills up; a quick press does nothing.
 
 ## Other useful binds
 

@@ -64,3 +64,12 @@ timing {
     status "4s"
     notification-center "2s"
 }
+
+// The session menu (the power button in the expanded right island). Hold an option
+// this long to run it; commands run with `sh -c`.
+session {
+    hold "800ms"
+    poweroff "systemctl poweroff"
+    reboot "systemctl reboot"
+    logout "niri msg action quit --skip-confirmation"
+}

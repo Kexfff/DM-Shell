@@ -36,6 +36,8 @@ pub struct Options {
     pub wifi: Option<bool>,
     /// Do not disturb.
     pub dnd: bool,
+    /// The session menu is open (`Some`), with this option held this far.
+    pub session: Option<Option<(dmsh_core::SessionAction, f32)>>,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -72,6 +74,8 @@ pub fn render(opts: Options) -> Result<()> {
                 wifi: opts.wifi,
                 keep_awake: false,
                 dnd: opts.dnd,
+                session_open: opts.session.is_some(),
+                session_hold: opts.session.flatten(),
             },
             ..activities.view(now)
         };

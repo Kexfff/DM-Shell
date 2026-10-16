@@ -158,6 +158,33 @@ timing {
 
 Durations take a unit: `ms`, `s` or `m`.
 
+## `session`
+
+The power button in the expanded right island opens the session menu. Each option runs
+when held (mouse button or Enter) until it fills up; letting go, or sliding off it,
+cancels.
+
+![Session menu with Reboot being held](images/session.png)
+
+```kdl
+session {
+    hold "800ms"
+    poweroff "systemctl poweroff"
+    reboot "systemctl reboot"
+    logout "niri msg action quit --skip-confirmation"
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `hold` | `800ms` | How long to hold an option before it runs. |
+| `poweroff` | `systemctl poweroff` | Command for Shut down. |
+| `reboot` | `systemctl reboot` | Command for Reboot. |
+| `logout` | `niri msg action quit --skip-confirmation` | Command for Log out. |
+
+Commands run with `sh -c`, so pipes and `&&` work (e.g. saving something before
+`systemctl poweroff`).
+
 ## Previewing a theme without running it
 
 `dmsh render` draws the islands with a config's theme into a PNG:
