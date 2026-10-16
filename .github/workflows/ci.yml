@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # libxkbcommon to link; fontconfig and a font for the text-rendering tests.
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev fontconfig fonts-dejavu-core
+
+      # rust-toolchain.toml pins stable with rustfmt and clippy; rustup installs it.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked

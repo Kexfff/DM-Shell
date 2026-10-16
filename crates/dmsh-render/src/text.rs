@@ -4,7 +4,9 @@
 //! scale, so steady animation frames only blend cached glyphs.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 use cosmic_text::{
     Attrs, Buffer, Color as TextColor, Ellipsize, EllipsizeHeightLimit, Family, FontSystem,
@@ -197,27 +199,123 @@ fn font_weight(w: Weight) -> FontWeight {
 }
 
 fn load_fonts(preferred: Option<&str>) -> (fontdb::Database, String) {
-    let mut db = fontdb::Database::new();
-    let family = preferred
-        .into_iter()
-        .chain(FAMILIES.iter().copied())
-        .find(|f| fc_match(f, "%{family[0]}").is_some_and(|m| m.eq_ignore_ascii_case(f)))
-        .map(|f| f.to_string())
-        .or_else(|| fc_match("sans-serif", "%{family[0]}"))
-        .unwrap_or_else(|| "sans-serif".into());
+    let key = format!("{}|{}", preferred.unwrap_or(""), FAMILIES.join(","));
+    let choice = FontChoice::cached(&key).unwrap_or_else(|| {
+        let choice = FontChoice::look_up(preferred);
+        choice.save(&key);
+        choice
+    });
 
-    for file in fc_list_files(&family) {
+    let mut db = fontdb::Database::new();
+    for file in choice.files.iter().chain(&choice.emoji) {
         let _ = db.load_font_file(file);
-    }
-    if let Some(emoji) = fc_match("emoji", "%{file}") {
-        let _ = db.load_font_file(emoji);
     }
     if db.is_empty() {
         log::warn!("fontconfig found no fonts; scanning all system fonts");
         db.load_system_fonts();
     }
-    db.set_sans_serif_family(family.clone());
-    (db, family)
+    db.set_sans_serif_family(choice.family.clone());
+    (db, choice.family)
+}
+
+/// Asking fontconfig takes 10–25 ms per `fc-match`/`fc-list` call, which dominated
+/// startup. The answer is cached in `~/.cache/dmsh/fonts` and reused while its files
+/// exist, for up to a week (so newly installed fonts are picked up eventually).
+#[derive(Debug, PartialEq)]
+struct FontChoice {
+    family: String,
+    files: Vec<PathBuf>,
+    emoji: Option<PathBuf>,
+}
+
+const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+impl FontChoice {
+    fn look_up(preferred: Option<&str>) -> Self {
+        let family = preferred
+            .into_iter()
+            .chain(FAMILIES.iter().copied())
+            .find(|f| fc_match(f, "%{family[0]}").is_some_and(|m| m.eq_ignore_ascii_case(f)))
+            .map(|f| f.to_string())
+            .or_else(|| fc_match("sans-serif", "%{family[0]}"))
+            .unwrap_or_else(|| "sans-serif".into());
+        Self {
+            files: fc_list_files(&family)
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            emoji: fc_match("emoji", "%{file}").map(PathBuf::from),
+            family,
+        }
+    }
+
+    fn cache_path() -> Option<PathBuf> {
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+        Some(base.join("dmsh").join("fonts"))
+    }
+
+    /// The cached choice for `key`, if it's fresh and its files still exist.
+    fn cached(key: &str) -> Option<Self> {
+        let path = Self::cache_path()?;
+        let age = path.metadata().ok()?.modified().ok()?.elapsed().ok()?;
+        if age > CACHE_MAX_AGE {
+            return None;
+        }
+        let choice = Self::parse(&std::fs::read_to_string(path).ok()?, key)?;
+        let all_exist = choice.files.iter().chain(&choice.emoji).all(|f| f.exists());
+        (all_exist && !choice.files.is_empty()).then_some(choice)
+    }
+
+    /// `key`, family, emoji file (or empty), then one font file per line.
+    fn parse(text: &str, key: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != key {
+            return None;
+        }
+        let family = lines.next()?.to_owned();
+        let emoji = Some(lines.next()?)
+            .filter(|e| !e.is_empty())
+            .map(PathBuf::from);
+        let files = lines.map(PathBuf::from).collect();
+        Some(Self {
+            family,
+            files,
+            emoji,
+        })
+    }
+
+    fn serialize(&self, key: &str) -> String {
+        let mut text = format!("{key}\n{}\n", self.family);
+        if let Some(emoji) = &self.emoji {
+            text.push_str(&emoji.to_string_lossy());
+        }
+        text.push('\n');
+        for file in &self.files {
+            text.push_str(&file.to_string_lossy());
+            text.push('\n');
+        }
+        text
+    }
+
+    /// Best effort: written to a temporary file and renamed, so concurrent writers can't
+    /// leave a torn file.
+    fn save(&self, key: &str) {
+        let Some(path) = Self::cache_path() else {
+            return;
+        };
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&tmp, self.serialize(key)))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            log::debug!("caching font choice: {e}");
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
 }
 
 fn fc_match(pattern: &str, format: &str) -> Option<String> {
@@ -242,6 +340,30 @@ fn fc_list_files(family: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_choice_round_trips_and_checks_its_key() {
+        let choice = FontChoice {
+            family: "Inter".into(),
+            files: vec!["/f/Inter-Regular.ttf".into(), "/f/Inter-Bold.ttf".into()],
+            emoji: Some("/f/Emoji.ttf".into()),
+        };
+        let text = choice.serialize("|Inter");
+        assert_eq!(FontChoice::parse(&text, "|Inter"), Some(choice));
+        assert_eq!(
+            FontChoice::parse(&text, "Geist|Inter"),
+            None,
+            "config changed"
+        );
+
+        let no_emoji = FontChoice {
+            family: "Sans".into(),
+            files: vec!["/f/a.ttf".into()],
+            emoji: None,
+        };
+        let text = no_emoji.serialize("k");
+        assert_eq!(FontChoice::parse(&text, "k"), Some(no_emoji));
+    }
 
     #[test]
     fn blend_is_source_over() {

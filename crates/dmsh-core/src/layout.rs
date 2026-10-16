@@ -339,6 +339,8 @@ const EXPANDED_PAD: f32 = 16.0;
 const ROW_HEIGHT: f32 = 46.0;
 /// Notification rows visible at once in the expanded right island.
 pub const LIST_ROWS: usize = 6;
+/// Menu entries visible at once; longer tray menus scroll.
+pub const MENU_ROWS: usize = 12;
 /// Diameter of the round quick-control buttons.
 const CONTROL_SIZE: f32 = 38.0;
 
@@ -801,7 +803,28 @@ fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
         });
         y += row;
     }
-    for entry in &menu.entries {
+    let offset = menu
+        .offset
+        .min(menu.entries.len().saturating_sub(MENU_ROWS));
+    if offset > 0 {
+        let delta = Some(-(MENU_ROWS as i32));
+        let label = format!("{offset} above");
+        scroll_row(
+            &label,
+            "chevron-up",
+            delta,
+            y,
+            w,
+            theme,
+            m,
+            &mut items,
+            &mut hits,
+        );
+        y += 28.0;
+    }
+    let shown = &menu.entries[offset..(offset + MENU_ROWS).min(menu.entries.len())];
+    let below = menu.entries.len() - offset - shown.len();
+    for entry in shown {
         if entry.separator {
             let line = Rect::new(14.0, y + 4.0, w - 28.0, 1.0);
             items.push(Draw::Rect(RoundRect {
@@ -838,6 +861,22 @@ fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
             });
         }
         y += row;
+    }
+    if below > 0 {
+        let delta = Some(MENU_ROWS as i32);
+        let label = format!("{below} more");
+        scroll_row(
+            &label,
+            "chevron-down",
+            delta,
+            y,
+            w,
+            theme,
+            m,
+            &mut items,
+            &mut hits,
+        );
+        y += 28.0;
     }
     let first = menu.entries.first().map_or(0, |e| e.id);
     Content {
@@ -1376,6 +1415,7 @@ pub(crate) mod tests {
             title: "app".into(),
             entries: vec![entry(1, "Open"), entry(2, "More"), entry(3, "Disabled")],
             nested: true,
+            offset: 0,
         });
         let c = right_content(&v, false, &theme, &mut FakeMeasure).unwrap();
         let targets: Vec<_> = c.hits.iter().map(|h| h.target.clone()).collect();
@@ -1507,6 +1547,53 @@ pub(crate) mod tests {
             .iter()
             .any(|d| matches!(d, Draw::Text(t) if t.text == "Telegram"));
         assert!(caption);
+    }
+
+    #[test]
+    fn long_menus_scroll() {
+        use crate::activity::MenuEntryView;
+        let theme = Theme::default();
+        let entries: Vec<_> = (0..20)
+            .map(|id| MenuEntryView {
+                id,
+                label: format!("Entry {id}"),
+                enabled: true,
+                separator: false,
+                toggle: None,
+                submenu: false,
+            })
+            .collect();
+        let mut v = view(None, &[]);
+        v.menu = Some(MenuView {
+            title: "app".into(),
+            entries,
+            nested: false,
+            offset: 0,
+        });
+        let items = |c: &Content| -> Vec<i32> {
+            c.hits
+                .iter()
+                .filter_map(|h| match h.target {
+                    Target::MenuItem { id } => Some(id),
+                    _ => None,
+                })
+                .collect()
+        };
+        let top = right_content(&v, false, &theme, &mut FakeMeasure).unwrap();
+        assert_eq!(items(&top), (0..12).collect::<Vec<_>>());
+        assert!(
+            top.hits
+                .iter()
+                .any(|h| h.target == Target::Scroll(MENU_ROWS as i32))
+        );
+
+        v.menu.as_mut().unwrap().offset = 100;
+        let end = right_content(&v, false, &theme, &mut FakeMeasure).unwrap();
+        assert_eq!(
+            items(&end),
+            (8..20).collect::<Vec<_>>(),
+            "clamped to the end"
+        );
     }
 
     #[test]

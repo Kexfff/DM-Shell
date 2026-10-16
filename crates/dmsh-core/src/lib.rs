@@ -13,6 +13,7 @@ pub use activity::{
 };
 pub use anim::{IslandKind, Stage};
 pub use layout::{
-    Align, Color, Content, Draw, Group, Hit, IconDraw, ImageDraw, LIST_ROWS, Measure, Motion, Rect,
-    RoundRect, Scene, Target, TextDraw, TextStyle, Theme, Weight, center_content, right_content,
+    Align, Color, Content, Draw, Group, Hit, IconDraw, ImageDraw, LIST_ROWS, MENU_ROWS, Measure,
+    Motion, Rect, RoundRect, Scene, Target, TextDraw, TextStyle, Theme, Weight, center_content,
+    right_content,
 };

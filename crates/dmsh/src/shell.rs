@@ -242,6 +242,8 @@ struct OpenMenu {
     output: usize,
     /// Submenu ids from the top level to the level shown.
     path: Vec<i32>,
+    /// First entry shown at that level.
+    scroll: usize,
 }
 
 impl OpenMenu {
@@ -275,6 +277,7 @@ impl OpenMenu {
             title: self.menu.title.clone(),
             entries: shown,
             nested: !self.path.is_empty(),
+            offset: self.scroll,
         }
     }
 
@@ -493,6 +496,7 @@ impl Shell {
                     menu,
                     output: self.menu_output.unwrap_or(0),
                     path: Vec::new(),
+                    scroll: 0,
                 });
                 self.update_all();
             }
@@ -573,6 +577,17 @@ impl Shell {
 
     /// Scrolls an output's expanded notification list by `rows` (negative = newer).
     fn scroll_right(&mut self, index: usize, rows: i32) {
+        // An open menu replaces the list, so it gets the scrolling.
+        if let Some(menu) = self.menu.as_mut().filter(|m| m.output == index) {
+            let len = menu.view().entries.len();
+            let max = len.saturating_sub(dmsh_core::MENU_ROWS) as i64;
+            let scroll = (menu.scroll as i64 + i64::from(rows)).clamp(0, max) as usize;
+            if scroll != menu.scroll {
+                menu.scroll = scroll;
+                self.update_stage(index);
+            }
+            return;
+        }
         let items = self
             .views
             .focused
@@ -886,7 +901,10 @@ impl Shell {
             Target::MenuItem { id } => {
                 let Some(menu) = &mut self.menu else { return };
                 match menu.entry(id) {
-                    Some(entry) if !entry.children.is_empty() => menu.path.push(id),
+                    Some(entry) if !entry.children.is_empty() => {
+                        menu.path.push(id);
+                        menu.scroll = 0;
+                    }
                     Some(_) => {
                         let item = menu.menu.item.clone();
                         self.menu = None;
@@ -900,6 +918,7 @@ impl Shell {
             Target::MenuBack => {
                 if let Some(menu) = &mut self.menu {
                     menu.path.pop();
+                    menu.scroll = 0;
                     self.update_all();
                 }
                 return;

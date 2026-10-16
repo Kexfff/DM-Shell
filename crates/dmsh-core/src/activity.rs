@@ -299,6 +299,9 @@ pub struct MenuView {
     pub entries: Vec<MenuEntryView>,
     /// A submenu: show a way back.
     pub nested: bool,
+    /// First entry shown; long menus scroll.
+    #[serde(default)]
+    pub offset: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

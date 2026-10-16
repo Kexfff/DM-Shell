@@ -252,6 +252,9 @@ it.
 
 ## Open questions
 
+- Startup: fontconfig lookups (10–25 ms per `fc-match`) dominated; the font choice is
+  now cached in `~/.cache/dmsh/fonts` (a week, while its files exist). In the VM: first
+  frame 78 ms cold, 13–28 ms after.
 - Verified in a clean niri VM: first frame in 34–38 ms, ~15 MB, 2 threads at rest; keep
   awake holds off idle (swayidle) and releases it; the clock is right one second after
   resuming from a 3-minute suspend.
