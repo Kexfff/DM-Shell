@@ -2,11 +2,11 @@
 //! critical battery warnings.
 
 use anyhow::{Result, bail};
-use dmsh_core::{ActivitySpec, Placement, Priority};
+use dmsh_core::{ActivitySpec, BatteryLevel, BatteryView, Placement, Priority};
 use futures_util::StreamExt;
 use zbus::Connection;
 
-use crate::Emitter;
+use crate::{Emitter, Event};
 
 const CHARGER_ID: &str = "power";
 const LOW_ID: &str = "battery-low";
@@ -65,9 +65,15 @@ pub async fn run(emitter: Emitter) -> Result<()> {
 
     let mut state = State::from(device.state().await?);
     let mut level = Level::Ok;
+    let mut shown: Option<BatteryView> = None;
     loop {
         let percent = device.percentage().await?;
         let new_state = State::from(device.state().await?);
+        let view = battery_view(new_state, percent);
+        if shown != Some(view) {
+            emitter.emit(Event::Battery(view));
+            shown = Some(view);
+        }
         if new_state != state {
             if let Some(title) = charger_message(state, new_state) {
                 let icon = if new_state == State::Discharging {
@@ -97,6 +103,19 @@ pub async fn run(emitter: Emitter) -> Result<()> {
             Some(_) = percent_changes.next() => {}
             else => bail!("UPower stopped"),
         }
+    }
+}
+
+/// What the right island's battery indicator shows.
+fn battery_view(state: State, percent: f64) -> BatteryView {
+    BatteryView {
+        percent: percent.round().clamp(0.0, 100.0) as u8,
+        charging: matches!(state, State::Charging | State::Full),
+        level: match battery_level(state, percent) {
+            Level::Ok => BatteryLevel::Normal,
+            Level::Low => BatteryLevel::Low,
+            Level::Critical => BatteryLevel::Critical,
+        },
     }
 }
 
@@ -144,6 +163,20 @@ mod tests {
         assert_eq!(charger_message(Charging, Discharging), Some("On battery"));
         assert_eq!(charger_message(Charging, Full), Some("Fully charged"));
         assert_eq!(charger_message(Other, Discharging), None);
+    }
+
+    #[test]
+    fn indicator_view() {
+        let v = battery_view(State::Discharging, 4.4);
+        assert_eq!(
+            (v.percent, v.charging, v.level),
+            (4, false, BatteryLevel::Critical)
+        );
+        let v = battery_view(State::Full, 100.0);
+        assert_eq!(
+            (v.percent, v.charging, v.level),
+            (100, true, BatteryLevel::Normal)
+        );
     }
 
     #[test]

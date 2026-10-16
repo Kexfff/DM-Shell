@@ -4,6 +4,15 @@ A minimal shell for [niri](https://github.com/YaLTeR/niri): two "dynamic islands
 top of every monitor that show only what is relevant right now. Not a toolkit — one
 purpose-built program. Light, fast, and controllable by AI agents.
 
+## Scope
+
+dmsh is the shell (islands, notifications, OSDs, tray, battery, quick controls) for a
+**bare niri config or the user's own**. It doesn't assume any other shell or desktop
+layer is installed. Desktop pieces — polkit agent, lock screen and idle policy,
+wallpaper, clipboard history, launcher, screenshot tools — are out of scope and set up
+separately (install scripts). If another shell is running, dmsh takes over notifications
+and the tray when it exits, but running on top of another shell isn't a goal.
+
 ## Goals and budgets
 
 | Budget | Target |
@@ -22,7 +31,11 @@ Both are solid black, Apple-style pills (the first and default theme).
   Expands (floating over windows) on hover/click. When media is playing or paused, the
   expanded center shows media controls.
 - **Right island** — less important, ambient things: chat messages, Wi-Fi changes, the
-  system tray. Shows the newest item plus a `+N` counter; expands into a list.
+  system tray, and the battery (always visible on laptops: a fill-level icon and percent,
+  orange when low, red when critical, green bolt while charging). Shows the newest item
+  plus a `+N` counter; expands into tray + battery, **quick controls** (Wi-Fi on/off via
+  NetworkManager, "Keep awake" via the Wayland idle-inhibit protocol), and the list.
+  Critical battery also takes the center until charging.
 
 ### Placement and lifecycle
 
@@ -193,6 +206,14 @@ by a test); `dmsh config check` validates; `dmsh config path` locates it.
   a center button) closes the island so the app gets the keyboard.
 - `dmsh activity clear --right`: clears the notification list.
 
+## Running it
+
+`dist/dmsh.service` is a systemd user unit bound to `graphical-session.target` (which
+`niri-session` starts); alternatively niri's `spawn-at-startup "dmsh"` (see `dmsh niri`).
+
+Quick controls are also available to scripts and agents:
+`dmsh control wifi on|off|toggle`, `dmsh control keep-awake on|off|toggle`.
+
 ## Phases
 
 0. **Skeleton** — layer surface per output, two static pills, input region, fractional
@@ -208,12 +229,17 @@ by a test); `dmsh config check` validates; `dmsh config path` locates it.
    media controls (previous / play-pause / next over MPRIS), system tray with menus. ✓
 5. **Config (KDL)** with live reload; **niri keybind integration** (toggle with keyboard
    navigation, `dmsh niri` snippet). ✓
+6. **Daily-driver gaps**: always-visible battery, quick controls (Wi-Fi, keep awake),
+   clock refresh on resume (logind `PrepareForSleep`), takeover from a previous shell,
+   systemd unit. ✓
 
 ## Open questions
 
-- Clock after suspend: the minute timer uses a monotonic clock, which stops during
-  suspend, so the clock can lag up to a minute after resume. Fix by also refreshing on
-  logind's `PrepareForSleep(false)` once the clock is visible (phase 3).
+- Clock after suspend is refreshed on logind's `PrepareForSleep(false)`; not yet
+  observed across a real suspend.
+- Keep awake creates an idle inhibitor on an island surface; its effect wasn't
+  measurable in the dev session (something else already held off idle).
+- Wi-Fi toggle: only "on while on" was exercised live; turning the radio off is untested.
+- Workspaces indicator: undecided.
 - Multi-monitor focus handling is unit-tested but not yet tried on a second monitor.
 
-- Workspaces indicator: not planned for now (niri's overview covers it). Revisit if missed.

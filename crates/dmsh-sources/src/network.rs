@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt;
+use tokio::sync::mpsc;
 use zbus::{Connection, zvariant::OwnedObjectPath};
 
-use crate::Emitter;
+use crate::{Emitter, Event};
 
 const ID: &str = "network";
 /// The primary connection flaps during roaming and reconnects; report only where it
@@ -22,7 +23,24 @@ const SETTLE: Duration = Duration::from_millis(1500);
 trait NetworkManager {
     #[zbus(property)]
     fn primary_connection(&self) -> zbus::Result<OwnedObjectPath>;
+    #[zbus(property)]
+    fn wireless_enabled(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn set_wireless_enabled(&self, value: bool) -> zbus::Result<()>;
+    fn get_devices(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
 }
+
+#[zbus::proxy(
+    interface = "org.freedesktop.NetworkManager.Device",
+    default_service = "org.freedesktop.NetworkManager"
+)]
+trait Device {
+    #[zbus(property)]
+    fn device_type(&self) -> zbus::Result<u32>;
+}
+
+/// `NM_DEVICE_TYPE_WIFI`.
+const DEVICE_TYPE_WIFI: u32 = 2;
 
 #[zbus::proxy(
     interface = "org.freedesktop.NetworkManager.Connection.Active",
@@ -41,26 +59,57 @@ struct Primary {
     kind: String,
 }
 
-pub async fn run(emitter: Emitter) -> Result<()> {
+/// `wifi` carries on/off requests from the quick control.
+pub async fn run(emitter: Emitter, mut wifi: mpsc::UnboundedReceiver<bool>) -> Result<()> {
     let conn = Connection::system().await?;
     let nm = NetworkManagerProxy::new(&conn).await?;
     let mut changes = nm.receive_primary_connection_changed().await;
+    let has_wifi = has_wifi_device(&conn, &nm).await;
+    // Yields the current value first, then every change.
+    let mut radio = nm.receive_wireless_enabled_changed().await;
 
     let mut last = primary(&conn, &nm).await;
     loop {
-        if changes.next().await.is_none() {
-            bail!("NetworkManager stopped");
-        }
-        while let Ok(Some(_)) = tokio::time::timeout(SETTLE, changes.next()).await {}
-
-        let now = primary(&conn, &nm).await;
-        if now != last {
-            if let Some(title) = message(last.as_ref(), now.as_ref()) {
-                emitter.push(emitter.status(ID, icon(now.as_ref()), title));
+        tokio::select! {
+            change = changes.next() => {
+                if change.is_none() {
+                    bail!("NetworkManager stopped");
+                }
+                while let Ok(Some(_)) = tokio::time::timeout(SETTLE, changes.next()).await {}
+                let now = primary(&conn, &nm).await;
+                if now != last {
+                    if let Some(title) = message(last.as_ref(), now.as_ref()) {
+                        emitter.push(emitter.status(ID, icon(now.as_ref()), title));
+                    }
+                    last = now;
+                }
             }
-            last = now;
+            Some(change) = radio.next(), if has_wifi => {
+                if let Ok(on) = change.get().await {
+                    emitter.emit(Event::Wifi(on));
+                }
+            }
+            Some(on) = wifi.recv() => {
+                if let Err(e) = nm.set_wireless_enabled(on).await {
+                    log::warn!("turning Wi-Fi {}: {e}", if on { "on" } else { "off" });
+                }
+            }
         }
     }
+}
+
+async fn has_wifi_device(conn: &Connection, nm: &NetworkManagerProxy<'_>) -> bool {
+    for path in nm.get_devices().await.unwrap_or_default() {
+        let Ok(builder) = DeviceProxy::builder(conn).path(path) else {
+            continue;
+        };
+        if let Ok(device) = builder.build().await
+            && device.device_type().await == Ok(DEVICE_TYPE_WIFI)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 async fn primary(conn: &Connection, nm: &NetworkManagerProxy<'_>) -> Option<Primary> {

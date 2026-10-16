@@ -1,0 +1,20 @@
+# dmsh as a systemd user service, tied to the graphical session (niri's `niri-session`
+# starts graphical-session.target). Install to ~/.config/systemd/user/ and enable:
+#   systemctl --user enable --now dmsh.service
+# Use this or niri's `spawn-at-startup "dmsh"`, not both.
+
+[Unit]
+Description=dmsh, a dynamic-island shell for niri
+Documentation=https://github.com/Kexfff/DM-Shell
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+# Adjust for `cargo install` (%h/.cargo/bin/dmsh) or a packaged path.
+ExecStart=/usr/bin/dmsh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

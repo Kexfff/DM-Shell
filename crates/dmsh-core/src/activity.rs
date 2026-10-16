@@ -217,6 +217,45 @@ pub struct View {
     /// An open tray menu; the right island shows it as a list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub menu: Option<MenuView>,
+    /// Laptop battery, always shown on the right island; `None` without a battery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery: Option<BatteryView>,
+    /// Quick controls in the expanded right island.
+    #[serde(default)]
+    pub controls: Controls,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BatteryView {
+    pub percent: u8,
+    pub charging: bool,
+    pub level: BatteryLevel,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BatteryLevel {
+    #[default]
+    Normal,
+    Low,
+    Critical,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Controls {
+    /// Wi-Fi radio on/off; `None` when there is no Wi-Fi device (or NetworkManager).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<bool>,
+    /// Idle (screen off, lock, suspend) is inhibited.
+    pub keep_awake: bool,
+}
+
+/// A quick control in the expanded right island.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Control {
+    Wifi,
+    KeepAwake,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -420,6 +459,8 @@ impl Activities {
             date: None,
             tray: Vec::new(),
             menu: None,
+            battery: None,
+            controls: Controls::default(),
         }
     }
 

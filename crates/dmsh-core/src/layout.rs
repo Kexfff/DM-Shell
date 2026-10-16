@@ -5,7 +5,8 @@
 //! the renderer implements it, tests use a fake.
 
 use crate::activity::{
-    Action, ActivityView, DEFAULT_ACTION, MenuView, Priority, RightView, TrayIconView, View,
+    Action, ActivityView, BatteryLevel, BatteryView, Control, Controls, DEFAULT_ACTION, MenuView,
+    Priority, TrayIconView, View,
 };
 
 /// Axis-aligned rectangle in logical pixels.
@@ -127,6 +128,8 @@ pub struct Theme {
     pub progress_fill: Color,
     pub button: Color,
     pub highlight: Color,
+    /// Battery icon while charging.
+    pub charging: Color,
     /// Icon color per priority, low to critical.
     pub priority_colors: [Color; 4],
     pub motion: Motion,
@@ -174,6 +177,7 @@ impl Default for Theme {
             progress_fill: Color::WHITE,
             button: Color::rgba(255, 255, 255, 30),
             highlight: Color::rgba(255, 255, 255, 22),
+            charging: Color::rgba(52, 199, 89, 255),
             // Apple system gray, white, orange, red.
             priority_colors: [
                 Color::rgba(142, 142, 147, 255),
@@ -302,6 +306,7 @@ pub enum Target {
         id: i32,
     },
     MenuBack,
+    Control(Control),
 }
 
 /// A clickable area; the first hit containing the pointer wins.
@@ -351,10 +356,12 @@ pub fn right_content(
     if let Some(menu) = &view.menu {
         return Some(menu_list(menu, theme, m));
     }
-    match (&view.right, expanded) {
-        (None, _) if view.tray.is_empty() => None,
-        (Some(right), true) => Some(right_list(right, &view.tray, theme, m)),
-        (right, _) => Some(right_compact(right.as_ref(), &view.tray, theme, m)),
+    let empty = view.right.is_none() && view.tray.is_empty() && view.battery.is_none();
+    match expanded {
+        // Expanded always has the quick controls, even with nothing else to show.
+        true => Some(right_list(view, theme, m)),
+        false if empty => None,
+        false => Some(right_compact(view, theme, m)),
     }
 }
 
@@ -539,18 +546,14 @@ fn activity_expanded(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Co
     }
 }
 
-/// The newest item with a `+N` badge, then the tray icons.
-fn right_compact(
-    right: Option<&RightView>,
-    tray: &[TrayIconView],
-    theme: &Theme,
-    m: &mut dyn Measure,
-) -> Content {
+/// The newest item with a `+N` badge, then the tray icons, then the battery.
+fn right_compact(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     let h = theme.pill_height;
     let mut items = Vec::new();
     let mut hits = Vec::new();
     let mut x = 10.0;
-    if let Some(right) = right {
+    let mut end_pad = PAD;
+    if let Some(right) = &view.right {
         let a = right.newest();
         let icon_size = 14.0;
         let style = TextStyle::new(12.5, Weight::Medium);
@@ -566,10 +569,10 @@ fn right_compact(
             items.push(place(n, x + 7.0, (h - nh) / 2.0));
             x += 7.0 + nw;
         }
-        x += if tray.is_empty() { PAD } else { 10.0 };
+        x += 10.0;
     }
     let slot = 26.0;
-    for item in tray {
+    for item in &view.tray {
         let rect = Rect::new(x, (h - slot) / 2.0, slot, slot);
         items.push(tray_icon(item, theme, rect, 16.0));
         hits.push(Hit {
@@ -581,21 +584,140 @@ fn right_compact(
             keyboard: true,
         });
         x += slot;
+        end_pad = 4.0;
     }
-    if !tray.is_empty() {
-        x += 4.0;
+    if let Some(battery) = &view.battery {
+        if !view.tray.is_empty() {
+            x += 4.0;
+        }
+        let size = 20.0;
+        let icon_rect = Rect::new(x, (h - size) / 2.0, size, size);
+        items.extend(battery_icon(battery, theme, icon_rect));
+        let style = TextStyle::new(12.0, Weight::Semibold);
+        let label = format!("{}%", battery.percent);
+        let (t, tw, th) = text(m, &label, style, theme.text, 60.0, 1);
+        items.push(place(t, x + size + 3.0, (h - th) / 2.0));
+        x += size + 3.0 + tw;
+        end_pad = PAD;
     }
-    let key = match right {
+    let key = match &view.right {
         Some(r) => format!("r:{}", r.newest().id),
-        None => "r:tray".into(),
+        None => "r:status".into(),
     };
     Content {
-        w: x,
+        w: x + end_pad,
         h,
         items,
         hits,
         key,
     }
+}
+
+/// A battery outline with a fill for the charge (or a bolt while charging); the fill is
+/// orange when low and red when critical, the icon green while charging.
+fn battery_icon(b: &BatteryView, theme: &Theme, rect: Rect) -> Vec<Draw> {
+    let level_color = match b.level {
+        BatteryLevel::Normal => theme.text,
+        BatteryLevel::Low => theme.priority_color(Priority::High),
+        BatteryLevel::Critical => theme.priority_color(Priority::Critical),
+    };
+    let (name, color) = if b.charging {
+        ("battery-charging", theme.charging)
+    } else {
+        ("battery", theme.text_secondary)
+    };
+    let mut draws = vec![Draw::Icon(IconDraw {
+        name: name.into(),
+        rect,
+        color,
+    })];
+    if !b.charging {
+        // Inside the icon's body (24-unit grid: x 5..16, y 9.5..14.5).
+        let u = rect.w / 24.0;
+        let fill = Rect::new(
+            rect.x + 5.0 * u,
+            rect.y + 9.5 * u,
+            (11.0 * u * f32::from(b.percent.min(100)) / 100.0).max(u),
+            5.0 * u,
+        );
+        draws.push(Draw::Rect(RoundRect {
+            rect: fill,
+            radius: u,
+            color: level_color,
+        }));
+    }
+    draws
+}
+
+/// A quick-control button: filled when on.
+#[allow(clippy::too_many_arguments)]
+fn toggle_button(
+    label: &str,
+    icon_name: &str,
+    on: bool,
+    rect: Rect,
+    control: Control,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    draws: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) {
+    let (bg, fg) = if on {
+        (theme.text, theme.pill_color)
+    } else {
+        (theme.button, theme.text)
+    };
+    draws.push(Draw::Rect(RoundRect {
+        rect,
+        radius: 12.0,
+        color: bg,
+    }));
+    let size = 16.0;
+    draws.push(Draw::Icon(IconDraw {
+        name: icon_name.into(),
+        rect: Rect::new(rect.x + 12.0, rect.y + (rect.h - size) / 2.0, size, size),
+        color: fg,
+    }));
+    let style = TextStyle::new(12.5, Weight::Semibold);
+    let (t, _, th) = text(m, label, style, fg, rect.w - 44.0, 1);
+    draws.push(place(t, rect.x + 36.0, rect.y + (rect.h - th) / 2.0));
+    hits.push(Hit {
+        rect,
+        target: Target::Control(control),
+        highlight: !on,
+        keyboard: true,
+    });
+}
+
+/// The quick controls row at `y`; returns its height.
+fn controls_row(
+    controls: &Controls,
+    y: f32,
+    w: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    draws: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) -> f32 {
+    let mut buttons: Vec<(&str, &str, bool, Control)> = Vec::new();
+    if let Some(on) = controls.wifi {
+        let icon = if on { "wifi" } else { "wifi-off" };
+        buttons.push(("Wi-Fi", icon, on, Control::Wifi));
+    }
+    buttons.push((
+        "Keep awake",
+        "coffee",
+        controls.keep_awake,
+        Control::KeepAwake,
+    ));
+    let (h, gap, pad) = (38.0, 8.0, 10.0);
+    let n = buttons.len() as f32;
+    let bw = (w - 2.0 * pad - gap * (n - 1.0)) / n;
+    for (i, (label, icon, on, control)) in buttons.into_iter().enumerate() {
+        let rect = Rect::new(pad + i as f32 * (bw + gap), y, bw, h);
+        toggle_button(label, icon, on, rect, control, theme, m, draws, hits);
+    }
+    h
 }
 
 /// A tray icon centered in `slot`, or a dot when the app gave no usable icon.
@@ -706,14 +828,14 @@ fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
     }
 }
 
-/// The tray row (if any), then one row per item with a close button, then "Clear all".
-fn right_list(
-    right: &RightView,
-    tray: &[TrayIconView],
-    theme: &Theme,
-    m: &mut dyn Measure,
-) -> Content {
-    let (items, total) = (&right.items, right.total);
+/// Tray icons and battery, quick controls, then one row per item with a close button,
+/// then "Clear all".
+fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
+    let tray = &view.tray;
+    let (items, total): (&[ActivityView], usize) = match &view.right {
+        Some(right) => (&right.items, right.total),
+        None => (&[], 0),
+    };
     let w = theme.right_expanded_width;
     let icon_size = 18.0;
     let close = 28.0;
@@ -722,8 +844,19 @@ fn right_list(
     let mut draws = Vec::new();
     let mut hits = Vec::new();
     let mut y = 8.0;
-    if !tray.is_empty() {
+    if !tray.is_empty() || view.battery.is_some() {
         let slot = 34.0;
+        if let Some(battery) = &view.battery {
+            let style = TextStyle::new(12.5, Weight::Semibold);
+            let charging = if battery.charging { " · Charging" } else { "" };
+            let label = format!("{}%{charging}", battery.percent);
+            let (t, tw, th) = text(m, &label, style, theme.text, 160.0, 1);
+            let tx = w - 14.0 - tw;
+            draws.push(place(t, tx, y + (slot - th) / 2.0));
+            let size = 22.0;
+            let icon_rect = Rect::new(tx - size - 4.0, y + (slot - size) / 2.0, size, size);
+            draws.extend(battery_icon(battery, theme, icon_rect));
+        }
         for (i, item) in tray.iter().enumerate() {
             let rect = Rect::new(8.0 + i as f32 * slot, y, slot, slot);
             draws.push(tray_icon(item, theme, rect, 20.0));
@@ -736,7 +869,10 @@ fn right_list(
                 keyboard: true,
             });
         }
-        y += slot + 4.0;
+        y += slot + 6.0;
+    }
+    y += controls_row(&view.controls, y, w, theme, m, &mut draws, &mut hits) + 8.0;
+    if !items.is_empty() {
         draws.push(Draw::Rect(RoundRect {
             rect: Rect::new(14.0, y, w - 28.0, 1.0),
             radius: 0.0,
@@ -1016,16 +1152,15 @@ pub(crate) mod tests {
         assert!(compact.w > single.w, "+1 badge adds width");
 
         let list = right_content(&view(None, &items), true, &theme, &mut m).unwrap();
-        assert_eq!(
-            list.h,
-            8.0 + 2.0 * ROW_HEIGHT + 34.0 + 8.0,
-            "rows + clear all"
-        );
-        // Close button, row, close button, row, clear all.
-        assert_eq!(list.hits.len(), 5);
-        assert_eq!(list.hits[0].target, Target::Dismiss { id: "a".into() });
-        assert_eq!(list.hits[4].target, Target::ClearRight);
+        // Keep awake, close button, row, close button, row, clear all.
+        let targets: Vec<_> = list.hits.iter().map(|h| h.target.clone()).collect();
+        assert_eq!(targets[0], Target::Control(Control::KeepAwake));
+        assert_eq!(targets[1], Target::Dismiss { id: "a".into() });
+        assert_eq!(targets.last(), Some(&Target::ClearRight));
+        assert_eq!(targets.len(), 6);
         assert!(right_content(&view(None, &[]), false, &theme, &mut m).is_none());
+        // Expanded still offers the quick controls.
+        assert!(right_content(&view(None, &[]), true, &theme, &mut m).is_some());
     }
 
     #[test]
@@ -1137,6 +1272,65 @@ pub(crate) mod tests {
                 Target::MenuItem { id: 2 }
             ]
         );
+    }
+
+    #[test]
+    fn battery_is_always_on_the_right_and_fills_by_charge() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        v.battery = Some(BatteryView {
+            percent: 50,
+            charging: false,
+            level: BatteryLevel::Normal,
+        });
+        let c = right_content(&v, false, &theme, &mut m).expect("battery shows the island");
+        let fill = c
+            .items
+            .iter()
+            .find_map(|d| match d {
+                Draw::Rect(r) if r.color == theme.text => Some(r.rect),
+                _ => None,
+            })
+            .expect("fill");
+        let full_width = 11.0 * 20.0 / 24.0;
+        assert!((fill.w - full_width / 2.0).abs() < 0.01);
+
+        v.battery = Some(BatteryView {
+            percent: 4,
+            charging: false,
+            level: BatteryLevel::Critical,
+        });
+        let c = right_content(&v, false, &theme, &mut m).unwrap();
+        let red = theme.priority_color(Priority::Critical);
+        assert!(
+            c.items
+                .iter()
+                .any(|d| matches!(d, Draw::Rect(r) if r.color == red))
+        );
+    }
+
+    #[test]
+    fn controls_show_wifi_only_with_a_device() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        let controls = |c: &Content| -> Vec<Target> {
+            c.hits
+                .iter()
+                .filter(|h| matches!(h.target, Target::Control(_)))
+                .map(|h| h.target.clone())
+                .collect()
+        };
+        let without = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(controls(&without), [Target::Control(Control::KeepAwake)]);
+        v.controls.wifi = Some(true);
+        let with = right_content(&v, true, &theme, &mut m).unwrap();
+        let expected = [
+            Target::Control(Control::Wifi),
+            Target::Control(Control::KeepAwake),
+        ];
+        assert_eq!(controls(&with), expected);
     }
 
     #[test]

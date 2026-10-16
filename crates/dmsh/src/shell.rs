@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use dmsh_core::{
-    Activities, ActivitySpec, IslandKind, MenuEntryView, MenuView, Placement, Priority, Stage,
-    Target, Theme, TrayIconView, View,
+    Activities, ActivitySpec, BatteryView, Control, Controls, IslandKind, MenuEntryView, MenuView,
+    Placement, Priority, Stage, Target, Theme, TrayIconView, View,
     activity::Island,
     config::{Config, ConfigError},
     ipc::{Event, Reply, Request, Response, StateDump},
@@ -55,6 +55,7 @@ use smithay_client_toolkit::{
 use wayland_protocols::wp::{
     cursor_shape::v1::client::wp_cursor_shape_device_v1::{self, Shape},
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
+    idle_inhibit::zv1::client::{zwp_idle_inhibit_manager_v1, zwp_idle_inhibitor_v1},
     viewporter::client::{wp_viewport, wp_viewporter},
 };
 
@@ -94,6 +95,10 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     let _socket = crate::ipc::listen(&event_loop.handle())?;
 
     let cursor_shape = CursorShapeManager::bind(&globals, &qh).ok();
+    let idle_inhibit = globals.bind(&qh, 1..=1, IdleInhibitData).ok();
+    if idle_inhibit.is_none() {
+        log::warn!("compositor has no idle-inhibit; keep awake won't work");
+    }
     let mut shell = Shell {
         seat_state: SeatState::new(&globals, &qh),
         pointer: None,
@@ -102,6 +107,10 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         cursor_shape,
         cursor_device: None,
         renderer: Renderer::new(config.font.as_deref()),
+        idle_inhibit,
+        keep_awake: None,
+        battery: None,
+        wifi: None,
         qh: qh.clone(),
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -178,6 +187,13 @@ pub struct Shell {
     cursor_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
     /// Fonts and glyph caches, shared by every output; also measures text for layout.
     renderer: Renderer,
+    idle_inhibit: Option<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1>,
+    /// Present while "keep awake" is on; attached to an island surface, which is always
+    /// visible, so the compositor (and idle daemons) treat the session as active.
+    keep_awake: Option<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1>,
+    battery: Option<BatteryView>,
+    /// Wi-Fi radio state; `None` without a Wi-Fi device.
+    wifi: Option<bool>,
     qh: QueueHandle<Shell>,
     output_state: OutputState,
     compositor: CompositorState,
@@ -360,6 +376,9 @@ impl Shell {
             }))),
             Request::Reload => self.reload().map(|()| Reply::Done),
             Request::Toggle { island } => self.toggle(island).map(|()| Reply::Done),
+            Request::Control { control, state } => {
+                self.set_control(control, state).map(|()| Reply::Done)
+            }
             Request::Version => Ok(Reply::Version {
                 version: env!("CARGO_PKG_VERSION").into(),
             }),
@@ -382,6 +401,11 @@ impl Shell {
             clock: self.clock.clone(),
             date: self.date.clone(),
             tray: self.tray.clone(),
+            battery: self.battery,
+            controls: Controls {
+                wifi: self.wifi,
+                keep_awake: self.keep_awake.is_some(),
+            },
             ..self.activities.view_for(now, focused)
         };
         let views = Views {
@@ -424,6 +448,14 @@ impl Shell {
                 }
             }
             SourceEvent::Tray(items) => self.set_tray(items),
+            SourceEvent::Battery(battery) => {
+                self.battery = Some(battery);
+                self.refresh();
+            }
+            SourceEvent::Wifi(on) => {
+                self.wifi = Some(on);
+                self.refresh();
+            }
             SourceEvent::Menu(menu) => {
                 self.menu = menu.map(|menu| OpenMenu {
                     menu,
@@ -508,6 +540,51 @@ impl Shell {
         self.refresh();
     }
 
+    /// Sets a quick control, or flips it when `state` is `None`.
+    fn set_control(&mut self, control: Control, state: Option<bool>) -> Result<(), String> {
+        match control {
+            Control::Wifi => {
+                let current = self.wifi.ok_or("no Wi-Fi device")?;
+                if let Some(sources) = &self.sources {
+                    // The UI follows NetworkManager's change signal.
+                    sources.send(SourceCommand::SetWifi(state.unwrap_or(!current)));
+                }
+            }
+            Control::KeepAwake => {
+                let on = state.unwrap_or(self.keep_awake.is_none());
+                self.set_keep_awake(on)?;
+                self.refresh();
+            }
+        }
+        Ok(())
+    }
+
+    fn set_keep_awake(&mut self, on: bool) -> Result<(), String> {
+        if let Some(inhibitor) = self.keep_awake.take() {
+            inhibitor.destroy();
+        }
+        if !on {
+            return Ok(());
+        }
+        let manager = self
+            .idle_inhibit
+            .as_ref()
+            .ok_or("the compositor doesn't support idle inhibition")?;
+        let island = self.islands.first().ok_or("no outputs with islands")?;
+        let surface = island.layer.wl_surface();
+        self.keep_awake = Some(manager.create_inhibitor(surface, &self.qh, IdleInhibitData));
+        Ok(())
+    }
+
+    /// Re-attaches keep awake after the islands changed (its surface may be gone).
+    fn reattach_keep_awake(&mut self) {
+        if self.keep_awake.is_some()
+            && let Err(e) = self.set_keep_awake(true)
+        {
+            log::warn!("keep awake: {e}");
+        }
+    }
+
     /// The output niri reports as focused (else the first one).
     fn focused_index(&self) -> Option<usize> {
         let by_name = self.islands.iter().position(|i| {
@@ -527,9 +604,6 @@ impl Shell {
         if self.islands[index].pinned == Some(kind) {
             self.unpin(index);
             return Ok(());
-        }
-        if kind == IslandKind::Right && self.views.focused.right.is_none() && self.tray.is_empty() {
-            return Err("the right island has nothing to show".into());
         }
         for i in 0..self.islands.len() {
             if i != index && self.islands[i].pinned.is_some() {
@@ -719,6 +793,7 @@ impl Shell {
                 self.add_output(&qh, output);
             }
         }
+        self.reattach_keep_awake();
         self.update_all();
     }
 
@@ -769,6 +844,12 @@ impl Shell {
                 return;
             }
             _ if button != BTN_LEFT => return,
+            Target::Control(control) => {
+                if let Err(e) = self.set_control(control, None) {
+                    log::warn!("{e}");
+                }
+                return;
+            }
             Target::Invoke { id, key } => Request::Invoke { id, key },
             Target::Dismiss { id } => Request::Dismiss { id },
             Target::ClearRight => Request::Clear {
@@ -1094,6 +1175,7 @@ impl OutputHandler for Shell {
         output: wl_output::WlOutput,
     ) {
         self.islands.retain(|i| i.output != output);
+        self.reattach_keep_awake();
     }
 }
 
@@ -1321,6 +1403,32 @@ delegate_registry!(Shell);
 smithay_client_toolkit::delegate_dispatch2!(Shell);
 
 // User data for the fractional-scale and viewporter objects, which sctk doesn't wrap.
+
+struct IdleInhibitData;
+
+impl Dispatch2<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, Shell> for IdleInhibitData {
+    fn event(
+        &self,
+        _: &mut Shell,
+        _: &zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+        _: zwp_idle_inhibit_manager_v1::Event,
+        _: &Connection,
+        _: &QueueHandle<Shell>,
+    ) {
+    }
+}
+
+impl Dispatch2<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, Shell> for IdleInhibitData {
+    fn event(
+        &self,
+        _: &mut Shell,
+        _: &zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+        _: zwp_idle_inhibitor_v1::Event,
+        _: &Connection,
+        _: &QueueHandle<Shell>,
+    ) {
+    }
+}
 
 struct FractionalManagerData;
 struct ViewporterData;

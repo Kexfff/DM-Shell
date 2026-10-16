@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use dmsh_core::{
-    Action, ActivitySpec, IslandKind, Placement, Priority,
+    Action, ActivitySpec, Control, IslandKind, Placement, Priority,
     activity::Island,
     ipc::{Event, Reply, Request, Response},
 };
@@ -62,6 +62,14 @@ enum Command {
     },
     /// Print a snippet for niri's config: autostart and keybinds.
     Niri,
+    /// Set a quick control: wifi or keep-awake.
+    Control {
+        #[arg(value_parser = parse_enum::<Control>)]
+        control: Control,
+        /// on, off or toggle.
+        #[arg(default_value = "toggle", value_parser = ["on", "off", "toggle"])]
+        state: String,
+    },
     /// Draw the islands headlessly to a PNG, simulating animations on a fake clock.
     Render {
         #[arg(short, long, default_value = "dmsh.png")]
@@ -169,6 +177,7 @@ enum ActivityCommand {
 const NIRI_SNIPPET: &str = r#"// dmsh for niri: add these to ~/.config/niri/config.kdl
 // (merge the binds into your existing `binds {}` block; pick keys that are free).
 
+// Or install dist/dmsh.service instead (not both).
 spawn-at-startup "dmsh"
 
 binds {
@@ -216,6 +225,14 @@ fn main() -> Result<()> {
         }
         Command::Reload => call(&Request::Reload).map(|_| ()),
         Command::Toggle { island } => call(&Request::Toggle { island }).map(|_| ()),
+        Command::Control { control, state } => {
+            let state = match state.as_str() {
+                "on" => Some(true),
+                "off" => Some(false),
+                _ => None,
+            };
+            call(&Request::Control { control, state }).map(|_| ())
+        }
         Command::Niri => {
             print!("{NIRI_SNIPPET}");
             Ok(())

@@ -763,7 +763,10 @@ mod tests {
         let v = view(None, &items);
         update(&mut stage, &v, Some(IslandKind::Right));
         stage.set_keyboard(Some(IslandKind::Right));
-        // Rows a, b, then "Clear all"; close buttons are skipped.
+        // Keep awake, rows a, b, then "Clear all"; close buttons are skipped.
+        let keep_awake = Target::Control(crate::activity::Control::KeepAwake);
+        assert_eq!(stage.selected_target(), Some(keep_awake.clone()));
+        assert!(stage.move_selection(1));
         assert_eq!(
             stage.selected_target(),
             Some(Target::Dismiss { id: "a".into() })
@@ -776,11 +779,7 @@ mod tests {
         stage.move_selection(1);
         assert_eq!(stage.selected_target(), Some(Target::ClearRight));
         stage.move_selection(1);
-        assert_eq!(
-            stage.selected_target(),
-            Some(Target::Dismiss { id: "a".into() }),
-            "wraps"
-        );
+        assert_eq!(stage.selected_target(), Some(keep_awake), "wraps");
         stage.move_selection(-1);
         assert_eq!(
             stage.selected_target(),

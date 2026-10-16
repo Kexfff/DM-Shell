@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::activity::{ActivitySpec, ActivityState, Island, View};
+use crate::activity::{ActivitySpec, ActivityState, Control, Island, View};
 
 /// Environment variable that overrides the socket path.
 pub const SOCKET_ENV: &str = "DMSH_SOCKET";
@@ -39,6 +39,12 @@ pub enum Request {
     Version,
     /// Re-read the config file; replies with an error if it is invalid.
     Reload,
+    /// Set a quick control (`state`), or flip it when `state` is absent.
+    Control {
+        control: Control,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<bool>,
+    },
     /// Open an island on the focused output with keyboard focus (arrows, Enter, Delete,
     /// Esc), or close it if it is already open. Meant for compositor keybinds.
     Toggle {

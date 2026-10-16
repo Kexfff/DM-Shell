@@ -8,8 +8,8 @@ pub mod ipc;
 mod layout;
 
 pub use activity::{
-    Action, Activities, ActivitySpec, ActivityView, DEFAULT_ACTION, MenuEntryView, MenuView,
-    Placement, Priority, TrayIconView, View,
+    Action, Activities, ActivitySpec, ActivityView, BatteryLevel, BatteryView, Control, Controls,
+    DEFAULT_ACTION, MenuEntryView, MenuView, Placement, Priority, TrayIconView, View,
 };
 pub use anim::{IslandKind, Stage};
 pub use layout::{

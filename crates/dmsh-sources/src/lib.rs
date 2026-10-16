@@ -40,6 +40,10 @@ pub enum Event {
     Tray(Vec<tray::TrayItem>),
     /// A tray item's menu was fetched (open it), or `None`.
     Menu(Option<tray::Menu>),
+    /// Battery state on every change; never sent without a battery.
+    Battery(dmsh_core::BatteryView),
+    /// Wi-Fi radio on/off; sent only when there is a Wi-Fi device.
+    Wifi(bool),
 }
 
 /// What the shell tells sources.
@@ -56,6 +60,8 @@ pub enum Command {
         key: String,
     },
     Tray(tray::Command),
+    /// Turn the Wi-Fi radio on or off.
+    SetWifi(bool),
 }
 
 /// Lets the shell send [`Command`]s to the sources thread.
@@ -109,6 +115,7 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     let (notifications_tx, notifications_rx) = mpsc::unbounded_channel();
     let (media_tx, media_rx) = mpsc::unbounded_channel();
     let (tray_tx, tray_rx) = mpsc::unbounded_channel();
+    let (network_tx, network_rx) = mpsc::unbounded_channel();
 
     let enabled = emitter.config().sources.clone();
     tokio::spawn(supervise("clock", clock::run(emitter.clone())));
@@ -126,7 +133,10 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
         tokio::spawn(supervise("power", power::run(emitter.clone())));
     }
     if enabled.network {
-        tokio::spawn(supervise("network", network::run(emitter.clone())));
+        tokio::spawn(supervise(
+            "network",
+            network::run(emitter.clone(), network_rx),
+        ));
     }
     if enabled.tray {
         tokio::spawn(supervise("tray", tray::run(emitter.clone(), tray_rx)));
@@ -155,6 +165,9 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
             }
             Command::Tray(command) => {
                 let _ = tray_tx.send(command);
+            }
+            Command::SetWifi(on) => {
+                let _ = network_tx.send(on);
             }
         }
     }
