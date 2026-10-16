@@ -339,8 +339,7 @@ impl Shell {
             }
             Request::Clear { island } => {
                 let removed = match island {
-                    Some(Island::Right) => self.activities.clear_right(now),
-                    Some(Island::Center) => Vec::new(),
+                    Some(island) => self.activities.clear_island(island, now),
                     None => self.activities.clear(),
                 };
                 for id in removed {

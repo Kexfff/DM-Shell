@@ -389,13 +389,13 @@ impl Activities {
         has.then_some(entry.spec.keep_on_action)
     }
 
-    /// Removes everything on the right island; returns the removed ids.
-    pub fn clear_right(&mut self, now: Instant) -> Vec<String> {
-        let (right, rest) = std::mem::take(&mut self.entries)
+    /// Removes everything currently on one island; returns the removed ids.
+    pub fn clear_island(&mut self, island: Island, now: Instant) -> Vec<String> {
+        let (removed, rest) = std::mem::take(&mut self.entries)
             .into_iter()
-            .partition(|e| e.island(now) == Island::Right);
+            .partition(|e| e.island(now) == island);
         self.entries = rest;
-        right.into_iter().map(|e: Entry| e.spec.id).collect()
+        removed.into_iter().map(|e: Entry| e.spec.id).collect()
     }
 
     /// Removes everything; returns the removed ids.
@@ -659,7 +659,7 @@ mod tests {
         a.push(spec("tg", Placement::Right), t0).unwrap();
         assert_eq!(a.action("perm", "allow"), Some(false));
         assert_eq!(a.action("perm", "deny"), None);
-        assert_eq!(a.clear_right(t0), ["tg"]);
+        assert_eq!(a.clear_island(Island::Right, t0), ["tg"]);
         assert_eq!(a.states(t0).len(), 1);
 
         let empty_key = ActivitySpec {

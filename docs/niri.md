@@ -1,0 +1,73 @@
+# niri integration
+
+## Autostart and keybinds
+
+`dmsh niri` prints a snippet for `~/.config/niri/config.kdl`:
+
+```kdl
+spawn-at-startup "dmsh"
+
+binds {
+    Mod+N hotkey-overlay-title="dmsh: notifications" { spawn "dmsh" "toggle" "right"; }
+    Mod+Ctrl+N hotkey-overlay-title="dmsh: clear notifications" { spawn "dmsh" "activity" "clear" "--right"; }
+    Mod+I hotkey-overlay-title="dmsh: center island" { spawn "dmsh" "toggle" "center"; }
+}
+```
+
+Merge the binds into your existing `binds {}` block and pick keys that are free in
+your config. Instead of `spawn-at-startup`, you can use the systemd unit in
+[`dist/dmsh.service`](../dist/dmsh.service) — one or the other, not both.
+
+## What dmsh takes from niri
+
+dmsh reads niri's event stream (`$NIRI_SOCKET`):
+
+- **Focused monitor** — transient center events (notifications, OSDs) appear only on
+  the focused monitor; the right island is the same on every monitor.
+- **Keyboard layout** — an overlay when the layout switches.
+- **Screencasts** — "Screen is being shared" on the right island while a niri
+  screencast is active.
+
+## Keyboard navigation
+
+`dmsh toggle right` and `dmsh toggle center` open that island on the focused monitor,
+keep it expanded, and take keyboard focus. Running the same toggle again closes it.
+
+| Key | Action |
+|---|---|
+| ↑ ↓ ← →, `j` `k` `h` `l`, Tab, Shift+Tab | Move the selection |
+| Enter, Space | Activate (button, notification, toggle, tray icon, menu entry) |
+| Delete, Backspace, `d` | Dismiss the selected notification |
+| `m`, Menu | Open the selected tray icon's menu |
+| Esc | Close the menu, then the island |
+
+Activating something that hands focus to an app — opening a notification, a tray app,
+a menu entry, a center button — closes the island, so the app gets the keyboard.
+Toggles, dismissals and "Clear all" keep it open.
+
+## Other useful binds
+
+Any dmsh command works in a bind:
+
+```kdl
+binds {
+    Mod+Shift+K { spawn "dmsh" "control" "keep-awake"; }
+    Mod+Shift+F { spawn "dmsh" "control" "wifi"; }
+}
+```
+
+Volume, brightness and media keys don't need dmsh at all: bind them to `wpctl`,
+`brightnessctl` and `playerctl`, and dmsh shows the overlays when the values change.
+
+```kdl
+binds {
+    XF86AudioRaiseVolume allow-when-locked=true { spawn "wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%+"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"; }
+    XF86AudioMute        allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"; }
+    XF86MonBrightnessUp   allow-when-locked=true { spawn "brightnessctl" "set" "5%+"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn "brightnessctl" "set" "5%-"; }
+    XF86AudioPlay { spawn "playerctl" "play-pause"; }
+    XF86AudioNext { spawn "playerctl" "next"; }
+    XF86AudioPrev { spawn "playerctl" "previous"; }
+}
+```

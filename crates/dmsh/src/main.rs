@@ -64,6 +64,7 @@ enum Command {
     Niri,
     /// Set a quick control: wifi or keep-awake.
     Control {
+        /// wifi or keep-awake.
         #[arg(value_parser = parse_enum::<Control>)]
         control: Control,
         /// on, off or toggle.
@@ -108,6 +109,12 @@ enum Command {
         /// Pointer position for hover highlights: <x>,<y> (logical).
         #[arg(long, value_parser = parse_crop)]
         pointer: Option<(f32, f32)>,
+        /// Show a battery at this percent (append `+` for charging, e.g. 76+).
+        #[arg(long)]
+        battery: Option<String>,
+        /// Show the Wi-Fi quick control: on or off.
+        #[arg(long, value_parser = ["on", "off"])]
+        wifi: Option<String>,
     },
 }
 
@@ -125,10 +132,12 @@ enum ConfigCommand {
 enum ActivityCommand {
     /// Create or update an activity (same id = update).
     Push {
+        /// Stable id; pushing the same id again updates the activity.
         #[arg(long)]
         id: String,
         #[arg(long)]
         title: String,
+        /// Secondary text, shown when the island expands.
         #[arg(long)]
         body: Option<String>,
         /// 0.0 to 1.0.
@@ -278,7 +287,11 @@ fn main() -> Result<()> {
             background,
             crop,
             pointer,
+            battery,
+            wifi,
         } => headless::render(headless::Options {
+            battery: battery.as_deref().map(parse_battery).transpose()?,
+            wifi: wifi.map(|w| w == "on"),
             config: match &cli.config {
                 Some(path) => config::load(Some(path))
                     .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
@@ -382,6 +395,28 @@ fn call(request: &Request) -> Result<Reply> {
 /// Parses `1500ms`, `2s` or `5m`.
 fn parse_duration(s: &str) -> Result<Duration, String> {
     dmsh_core::config::parse_duration(s)
+}
+
+/// Parses `76` or `76+` (charging).
+fn parse_battery(s: &str) -> Result<dmsh_core::BatteryView> {
+    let (number, charging) = match s.strip_suffix('+') {
+        Some(n) => (n, true),
+        None => (s, false),
+    };
+    let percent: u8 = number
+        .parse()
+        .context("--battery expects a percent, e.g. 76 or 76+")?;
+    let level = match percent {
+        _ if charging => dmsh_core::BatteryLevel::Normal,
+        0..=5 => dmsh_core::BatteryLevel::Critical,
+        6..=20 => dmsh_core::BatteryLevel::Low,
+        _ => dmsh_core::BatteryLevel::Normal,
+    };
+    Ok(dmsh_core::BatteryView {
+        percent: percent.min(100),
+        charging,
+        level,
+    })
 }
 
 /// Parses `key:Label`, or `key` alone (label = key).

@@ -31,6 +31,9 @@ pub struct Options {
     pub crop: Option<(f32, f32)>,
     /// Pointer position for hover highlights, in logical surface coordinates.
     pub pointer: Option<(f32, f32)>,
+    pub battery: Option<dmsh_core::BatteryView>,
+    /// Wi-Fi quick control state; `None` hides it.
+    pub wifi: Option<bool>,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -55,6 +58,11 @@ pub fn render(opts: Options) -> Result<()> {
         let view = View {
             clock: Some(opts.clock.clone()),
             date: Some(opts.date.clone()),
+            battery: opts.battery,
+            controls: dmsh_core::Controls {
+                wifi: opts.wifi,
+                keep_awake: false,
+            },
             ..activities.view(now)
         };
         let hover = opts.hover.filter(|_| t >= opts.hover_at);
