@@ -335,6 +335,8 @@ pub struct Content {
 const PAD: f32 = 12.0;
 const EXPANDED_PAD: f32 = 16.0;
 const ROW_HEIGHT: f32 = 46.0;
+/// Diameter of the round quick-control buttons.
+const CONTROL_SIZE: f32 = 38.0;
 
 /// Collapsed or expanded content for the center island.
 pub fn center_content(view: &View, expanded: bool, theme: &Theme, m: &mut dyn Measure) -> Content {
@@ -649,16 +651,13 @@ fn battery_icon(b: &BatteryView, theme: &Theme, rect: Rect) -> Vec<Draw> {
     draws
 }
 
-/// A quick-control button: filled when on.
-#[allow(clippy::too_many_arguments)]
-fn toggle_button(
-    label: &str,
+/// A round, icon-only quick-control button: filled when on.
+fn control_button(
     icon_name: &str,
     on: bool,
     rect: Rect,
     control: Control,
     theme: &Theme,
-    m: &mut dyn Measure,
     draws: &mut Vec<Draw>,
     hits: &mut Vec<Hit>,
 ) {
@@ -667,20 +666,18 @@ fn toggle_button(
     } else {
         (theme.button, theme.text)
     };
-    draws.push(Draw::Rect(RoundRect {
-        rect,
-        radius: 12.0,
-        color: bg,
-    }));
-    let size = 16.0;
+    draws.push(Draw::Rect(RoundRect::pill(rect, bg)));
+    let size = 18.0;
     draws.push(Draw::Icon(IconDraw {
         name: icon_name.into(),
-        rect: Rect::new(rect.x + 12.0, rect.y + (rect.h - size) / 2.0, size, size),
+        rect: Rect::new(
+            rect.x + (rect.w - size) / 2.0,
+            rect.y + (rect.h - size) / 2.0,
+            size,
+            size,
+        ),
         color: fg,
     }));
-    let style = TextStyle::new(12.5, Weight::Semibold);
-    let (t, _, th) = text(m, label, style, fg, rect.w - 44.0, 1);
-    draws.push(place(t, rect.x + 36.0, rect.y + (rect.h - th) / 2.0));
     hits.push(Hit {
         rect,
         target: Target::Control(control),
@@ -689,35 +686,28 @@ fn toggle_button(
     });
 }
 
-/// The quick controls row at `y`; returns its height.
+/// Round icon buttons for the quick controls, from the left at `y`; returns where they end.
 fn controls_row(
     controls: &Controls,
     y: f32,
-    w: f32,
     theme: &Theme,
-    m: &mut dyn Measure,
     draws: &mut Vec<Draw>,
     hits: &mut Vec<Hit>,
 ) -> f32 {
-    let mut buttons: Vec<(&str, &str, bool, Control)> = Vec::new();
+    let mut buttons: Vec<(&str, bool, Control)> = Vec::new();
     if let Some(on) = controls.wifi {
         let icon = if on { "wifi" } else { "wifi-off" };
-        buttons.push(("Wi-Fi", icon, on, Control::Wifi));
+        buttons.push((icon, on, Control::Wifi));
     }
-    buttons.push((
-        "Keep awake",
-        "coffee",
-        controls.keep_awake,
-        Control::KeepAwake,
-    ));
-    let (h, gap, pad) = (38.0, 8.0, 10.0);
-    let n = buttons.len() as f32;
-    let bw = (w - 2.0 * pad - gap * (n - 1.0)) / n;
-    for (i, (label, icon, on, control)) in buttons.into_iter().enumerate() {
-        let rect = Rect::new(pad + i as f32 * (bw + gap), y, bw, h);
-        toggle_button(label, icon, on, rect, control, theme, m, draws, hits);
+    buttons.push(("coffee", controls.keep_awake, Control::KeepAwake));
+    let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
+    let mut x = pad;
+    for (icon, on, control) in buttons {
+        let rect = Rect::new(x, y, size, size);
+        control_button(icon, on, rect, control, theme, draws, hits);
+        x += size + gap;
     }
-    h
+    x - gap
 }
 
 /// A tray icon centered in `slot`, or a dot when the app gave no usable icon.
@@ -843,35 +833,48 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     let text_w = w - text_x - 8.0 - close - 6.0;
     let mut draws = Vec::new();
     let mut hits = Vec::new();
-    let mut y = 8.0;
-    if !tray.is_empty() || view.battery.is_some() {
-        let slot = 34.0;
-        if let Some(battery) = &view.battery {
-            let style = TextStyle::new(12.5, Weight::Semibold);
-            let charging = if battery.charging { " · Charging" } else { "" };
-            let label = format!("{}%{charging}", battery.percent);
-            let (t, tw, th) = text(m, &label, style, theme.text, 160.0, 1);
-            let tx = w - 14.0 - tw;
-            draws.push(place(t, tx, y + (slot - th) / 2.0));
-            let size = 22.0;
-            let icon_rect = Rect::new(tx - size - 4.0, y + (slot - size) / 2.0, size, size);
-            draws.extend(battery_icon(battery, theme, icon_rect));
-        }
-        for (i, item) in tray.iter().enumerate() {
-            let rect = Rect::new(8.0 + i as f32 * slot, y, slot, slot);
-            draws.push(tray_icon(item, theme, rect, 20.0));
-            hits.push(Hit {
-                rect,
-                target: Target::Tray {
-                    id: item.id.clone(),
-                },
-                highlight: true,
-                keyboard: true,
-            });
-        }
+    // Header: quick controls on the left, battery on the right, tray icons between them
+    // (on their own row when they don't fit).
+    let mut y = 10.0;
+    let row = CONTROL_SIZE;
+    let controls_end = controls_row(&view.controls, y, theme, &mut draws, &mut hits);
+    let mut right_edge = w - 14.0;
+    if let Some(battery) = &view.battery {
+        let style = TextStyle::new(12.5, Weight::Semibold);
+        let charging = if battery.charging { " · Charging" } else { "" };
+        let label = format!("{}%{charging}", battery.percent);
+        let (t, tw, th) = text(m, &label, style, theme.text, 160.0, 1);
+        let tx = w - 14.0 - tw;
+        draws.push(place(t, tx, y + (row - th) / 2.0));
+        let size = 22.0;
+        let icon_rect = Rect::new(tx - size - 4.0, y + (row - size) / 2.0, size, size);
+        draws.extend(battery_icon(battery, theme, icon_rect));
+        right_edge = icon_rect.x - 6.0;
+    }
+    let slot = 34.0;
+    let inline_x = controls_end + 10.0;
+    let inline = inline_x + tray.len() as f32 * slot <= right_edge;
+    let (tray_x, tray_y) = if inline {
+        (inline_x, y + (row - slot) / 2.0)
+    } else {
+        (8.0, y + row + 6.0)
+    };
+    for (i, item) in tray.iter().enumerate() {
+        let rect = Rect::new(tray_x + i as f32 * slot, tray_y, slot, slot);
+        draws.push(tray_icon(item, theme, rect, 20.0));
+        hits.push(Hit {
+            rect,
+            target: Target::Tray {
+                id: item.id.clone(),
+            },
+            highlight: true,
+            keyboard: true,
+        });
+    }
+    y += row + 10.0;
+    if !inline && !tray.is_empty() {
         y += slot + 6.0;
     }
-    y += controls_row(&view.controls, y, w, theme, m, &mut draws, &mut hits) + 8.0;
     if !items.is_empty() {
         draws.push(Draw::Rect(RoundRect {
             rect: Rect::new(14.0, y, w - 28.0, 1.0),
@@ -1239,9 +1242,13 @@ pub(crate) mod tests {
         v.right = view(None, &[activity("a", None)]).right;
         let both = right_content(&v, false, &theme, &mut m).unwrap();
         assert!(both.w > with_item.w && both.w > only_tray.w);
-        // Expanded: tray row on top of the list.
+        // Expanded: controls, then the tray icons, then the list.
         let list = right_content(&v, true, &theme, &mut m).unwrap();
-        assert!(matches!(list.hits[0].target, Target::Tray { .. }));
+        assert!(matches!(list.hits[0].target, Target::Control(_)));
+        assert!(matches!(list.hits[1].target, Target::Tray { .. }));
+        // Few icons share the header row with the controls.
+        assert_eq!(list.hits[0].rect.y, 10.0);
+        assert!(list.hits[1].rect.y < 10.0 + CONTROL_SIZE);
     }
 
     #[test]

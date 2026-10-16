@@ -71,6 +71,7 @@ const SCALE_DENOM: u32 = 120;
 const CONFIG_ERROR_ID: &str = "config-error";
 
 pub fn run(config_path: Option<PathBuf>) -> Result<()> {
+    let started = Instant::now();
     let config_path = config_path.or_else(crate::config::default_path);
     let (config, config_error) = match crate::config::load(config_path.as_deref()) {
         Ok(config) => (config, None),
@@ -108,6 +109,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         cursor_device: None,
         renderer: Renderer::new(config.font.as_deref()),
         idle_inhibit,
+        started: Some(started),
         keep_awake: None,
         battery: None,
         wifi: None,
@@ -188,6 +190,8 @@ pub struct Shell {
     /// Fonts and glyph caches, shared by every output; also measures text for layout.
     renderer: Renderer,
     idle_inhibit: Option<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1>,
+    /// Process start, until the first frame is shown (for the startup-time budget).
+    started: Option<Instant>,
     /// Present while "keep awake" is on; attached to an island surface, which is always
     /// visible, so the compositor (and idle daemons) treat the session as active.
     keep_awake: Option<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1>,
@@ -1089,6 +1093,9 @@ impl Shell {
             return;
         }
         island.layer.commit();
+        if let Some(started) = self.started.take() {
+            log::info!("first frame after {} ms", started.elapsed().as_millis());
+        }
     }
 
     fn set_scale(&mut self, surface: &wl_surface::WlSurface, scale: u32) {

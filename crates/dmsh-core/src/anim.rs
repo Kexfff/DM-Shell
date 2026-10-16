@@ -493,6 +493,18 @@ impl Stage {
 
     pub fn scene(&self, theme: &Theme) -> Scene {
         let mut scene = Scene::default();
+        // The ghost goes underneath both islands: it slides under the right island, which
+        // keeps showing its own content, instead of covering it with a blank pill.
+        if let Some(g) = &self.ghost {
+            push_island(
+                &mut scene,
+                theme,
+                g.rect.current(),
+                Some(&g.content),
+                g.alpha.value,
+                None,
+            );
+        }
         let hovered = self.hovered_hit();
         for (i, island) in self.islands().enumerate() {
             let rect = island.rect.current();
@@ -511,16 +523,6 @@ impl Stage {
             if rect.w >= 1.0 && rect.h >= 1.0 {
                 scene.islands.push(rect);
             }
-        }
-        if let Some(g) = &self.ghost {
-            push_island(
-                &mut scene,
-                theme,
-                g.rect.current(),
-                Some(&g.content),
-                g.alpha.value,
-                None,
-            );
         }
         scene
     }
@@ -705,6 +707,27 @@ mod tests {
         assert!(stage.ghost.is_some());
         settle(&mut stage);
         assert!(stage.ghost.is_none());
+    }
+
+    #[test]
+    fn ghost_is_drawn_under_the_islands() {
+        let theme = Theme::default();
+        let mut stage = Stage::default();
+        let (old, n) = (activity("old", None), activity("n", None));
+        update(
+            &mut stage,
+            &view(Some(n.clone()), std::slice::from_ref(&old)),
+            None,
+        );
+        update(&mut stage, &view(None, &[n, old]), None);
+        stage.step(0.2);
+        let scene = stage.scene(&theme);
+        // The first group is the ghost's pill; the right island's pill comes after it.
+        let first = match &scene.groups[0].items[0] {
+            Draw::Rect(r) => r.rect,
+            _ => panic!("expected a pill"),
+        };
+        assert_eq!(first, stage.ghost.as_ref().unwrap().rect.current());
     }
 
     #[test]

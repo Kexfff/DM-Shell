@@ -1,0 +1,5 @@
+[
+  {"id": "media", "title": "Daft Punk — Instant Crush", "body": "spotify", "icon": "music", "placement": "center",
+   "priority": "low", "keep_on_action": true,
+   "actions": [{"key": "previous", "icon": "skip-back"}, {"key": "play-pause", "icon": "pause"}, {"key": "next", "icon": "skip-forward"}]}
+]

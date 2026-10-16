@@ -64,7 +64,7 @@ impl Images {
         };
         let source = &entry.source;
         let image = entry.sized.entry((w, h)).or_insert_with(|| {
-            let image = rasterize(source, w, h);
+            let image = rasterize(source, w, h).map(lighten_if_dark_monochrome);
             if image.is_none() {
                 log::debug!("could not load image {source:?}");
             }
@@ -109,6 +109,40 @@ fn rasterize(source: &ImageSource, w: u32, h: u32) -> Option<Pixmap> {
     }
 }
 
+/// Light text color the islands use; dark monochrome icons are tinted to it.
+const LIGHT: [u8; 3] = [245, 245, 247];
+
+/// Icon themes made for light panels draw tray icons dark gray, which vanishes on the
+/// black islands. A mostly-gray, dark icon is tinted light (keeping its shape and
+/// alpha); colored icons are left alone.
+fn lighten_if_dark_monochrome(mut image: Pixmap) -> Pixmap {
+    let (mut opaque, mut colored, mut luminance) = (0u32, 0u32, 0f32);
+    for px in image.pixels() {
+        let a = px.alpha();
+        if a < 64 {
+            continue;
+        }
+        let c = px.demultiply();
+        let (r, g, b) = (c.red(), c.green(), c.blue());
+        opaque += 1;
+        if r.max(g).max(b) - r.min(g).min(b) > 48 {
+            colored += 1;
+        }
+        luminance += (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0;
+    }
+    let monochrome = opaque > 0 && colored * 10 < opaque;
+    if !monochrome || luminance / opaque as f32 >= 0.45 {
+        return image;
+    }
+    for px in image.data_mut().as_chunks_mut::<4>().0 {
+        let a = u32::from(px[3]);
+        for (channel, light) in px.iter_mut().zip(LIGHT) {
+            *channel = ((u32::from(light) * a + 127) / 255) as u8;
+        }
+    }
+    image
+}
+
 /// Resamples to `w`×`h`, halving first for big downscales so small icons stay smooth.
 fn scale(image: &Pixmap, w: u32, h: u32) -> Pixmap {
     let mut current = image.clone();
@@ -135,6 +169,31 @@ fn resample(image: &Pixmap, w: u32, h: u32) -> Pixmap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn solid(rgba: [u8; 4]) -> Pixmap {
+        let data = rgba.repeat(8 * 8);
+        Pixmap::from_vec(data, IntSize::from_wh(8, 8).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn dark_monochrome_icons_turn_light() {
+        let dark = lighten_if_dark_monochrome(solid([40, 40, 40, 255]));
+        assert_eq!(dark.pixel(0, 0).unwrap().red(), LIGHT[0]);
+
+        // Premultiplied half-transparent dark gray keeps its alpha.
+        let faded = lighten_if_dark_monochrome(solid([20, 20, 20, 128]));
+        let px = faded.pixel(0, 0).unwrap();
+        assert_eq!(px.alpha(), 128);
+        assert!(px.demultiply().red() > 230);
+    }
+
+    #[test]
+    fn colored_and_light_icons_are_untouched() {
+        let blue = lighten_if_dark_monochrome(solid([30, 80, 200, 255]));
+        assert_eq!(blue.pixel(0, 0).unwrap().blue(), 200);
+        let light = lighten_if_dark_monochrome(solid([220, 220, 220, 255]));
+        assert_eq!(light.pixel(0, 0).unwrap().red(), 220);
+    }
 
     #[test]
     fn rgba_images_draw_scaled() {

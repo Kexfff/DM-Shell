@@ -1,0 +1,5 @@
+[
+  {"id": "perm", "title": "Claude needs permission", "body": "Run `cargo test --workspace` in DM-Shell?", "icon": "terminal",
+   "placement": "center", "priority": "high",
+   "actions": [{"key": "allow", "label": "Allow"}, {"key": "deny", "label": "Deny"}]}
+]

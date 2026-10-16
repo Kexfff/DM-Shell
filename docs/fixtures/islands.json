@@ -1,0 +1,5 @@
+[
+  {"id": "build", "title": "cargo build --release", "progress": 0.62, "icon": "terminal", "placement": "center"},
+  {"id": "tg", "title": "Alice", "body": "Are we still on for dinner tonight?", "icon": "message", "placement": "right"},
+  {"id": "wifi", "title": "Wi-Fi: Home", "icon": "wifi", "placement": "right", "priority": "low"}
+]

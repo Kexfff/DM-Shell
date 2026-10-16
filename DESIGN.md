@@ -33,8 +33,10 @@ Both are solid black, Apple-style pills (the first and default theme).
 - **Right island** — less important, ambient things: chat messages, Wi-Fi changes, the
   system tray, and the battery (always visible on laptops: a fill-level icon and percent,
   orange when low, red when critical, green bolt while charging). Shows the newest item
-  plus a `+N` counter; expands into tray + battery, **quick controls** (Wi-Fi on/off via
-  NetworkManager, "Keep awake" via the Wayland idle-inhibit protocol), and the list.
+  plus a `+N` counter; expands into a header row — round icon buttons for the **quick
+  controls** (Wi-Fi on/off via NetworkManager, "Keep awake" via the Wayland idle-inhibit
+  protocol), tray icons, battery — and the list. Dark monochrome tray icons (from icon
+  themes made for light panels) are tinted light so they show on the black pill.
   Critical battery also takes the center until charging.
 
 ### Placement and lifecycle
@@ -235,11 +237,12 @@ Quick controls are also available to scripts and agents:
 
 ## Open questions
 
-- Clock after suspend is refreshed on logind's `PrepareForSleep(false)`; not yet
-  observed across a real suspend.
-- Keep awake creates an idle inhibitor on an island surface; its effect wasn't
-  measurable in the dev session (something else already held off idle).
-- Wi-Fi toggle: only "on while on" was exercised live; turning the radio off is untested.
+- Verified in a clean niri VM: first frame in 34–38 ms, ~15 MB, 2 threads at rest; keep
+  awake holds off idle (swayidle) and releases it; the clock is right one second after
+  resuming from a 3-minute suspend.
+- Wi-Fi toggle: only "on while on" was exercised live; turning the radio off is untested
+  (the VM has no Wi-Fi device).
+- Multi-monitor is unit-tested only; the VM has one display head.
 - Workspaces indicator: undecided.
 - Multi-monitor focus handling is unit-tested but not yet tried on a second monitor.
 

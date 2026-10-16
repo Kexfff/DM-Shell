@@ -70,13 +70,22 @@ git clone https://github.com/Kexfff/DM-Shell && cd DM-Shell
 cargo install --path crates/dmsh
 ```
 
-That puts `dmsh` in `~/.cargo/bin`. Start it at login in one of two ways:
+That puts `dmsh` in `~/.cargo/bin`, which most shells don't have on `PATH` by default.
+Add it so the commands below work in your terminal (fish: `fish_add_path ~/.cargo/bin`):
 
-- **niri autostart** — print a snippet with autostart and keybinds, then merge it into
-  `~/.config/niri/config.kdl`:
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+niri starts programs with its own `PATH`, which usually doesn't include `~/.cargo/bin`
+either — so in niri's config, refer to dmsh by its full path. Then start it at login in
+one of two ways:
+
+- **niri autostart** — print a snippet with autostart and keybinds (it uses the full
+  path of the `dmsh` you run it with), then merge it into `~/.config/niri/config.kdl`:
 
   ```bash
-  dmsh niri
+  ~/.cargo/bin/dmsh niri
   ```
 
 - **systemd user service** — [`dist/dmsh.service`](dist/dmsh.service) is tied to
@@ -137,6 +146,9 @@ cargo test
 ```bash
 cargo run -- render --activities fixture.json --at 2500ms --filmstrip 200ms -o frames.png
 ```
+
+`sh docs/render-images.sh` regenerates the README screenshots from
+[`docs/fixtures/`](docs/fixtures).
 
 The workspace has four crates:
 

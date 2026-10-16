@@ -2,15 +2,18 @@
 
 ## Autostart and keybinds
 
-`dmsh niri` prints a snippet for `~/.config/niri/config.kdl`:
+`dmsh niri` prints a snippet for `~/.config/niri/config.kdl`. It refers to dmsh by the
+full path of the binary you ran it with, because niri starts programs with its own
+`PATH`, which usually doesn't include `~/.cargo/bin`. With `cargo install` it looks like
+this:
 
 ```kdl
-spawn-at-startup "dmsh"
+spawn-at-startup "/home/you/.cargo/bin/dmsh"
 
 binds {
-    Mod+N hotkey-overlay-title="dmsh: notifications" { spawn "dmsh" "toggle" "right"; }
-    Mod+Ctrl+N hotkey-overlay-title="dmsh: clear notifications" { spawn "dmsh" "activity" "clear" "--right"; }
-    Mod+I hotkey-overlay-title="dmsh: center island" { spawn "dmsh" "toggle" "center"; }
+    Mod+N hotkey-overlay-title="dmsh: notifications" { spawn "/home/you/.cargo/bin/dmsh" "toggle" "right"; }
+    Mod+Ctrl+N hotkey-overlay-title="dmsh: clear notifications" { spawn "/home/you/.cargo/bin/dmsh" "activity" "clear" "--right"; }
+    Mod+I hotkey-overlay-title="dmsh: center island" { spawn "/home/you/.cargo/bin/dmsh" "toggle" "center"; }
 }
 ```
 
@@ -47,7 +50,8 @@ Toggles, dismissals and "Clear all" keep it open.
 
 ## Other useful binds
 
-Any dmsh command works in a bind:
+Any dmsh command works in a bind (use the full path, as above; the examples shorten it
+to `dmsh` only if it's somewhere on niri's `PATH`, like `/usr/bin`):
 
 ```kdl
 binds {

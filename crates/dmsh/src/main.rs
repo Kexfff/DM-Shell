@@ -182,20 +182,21 @@ enum ActivityCommand {
     },
 }
 
-/// Printed by `dmsh niri`.
+/// Printed by `dmsh niri`; `{dmsh}` becomes the path of the running binary, since niri's
+/// `PATH` usually doesn't include `~/.cargo/bin`.
 const NIRI_SNIPPET: &str = r#"// dmsh for niri: add these to ~/.config/niri/config.kdl
 // (merge the binds into your existing `binds {}` block; pick keys that are free).
 
 // Or install dist/dmsh.service instead (not both).
-spawn-at-startup "dmsh"
+spawn-at-startup "{dmsh}"
 
 binds {
     // Notification list and tray, keyboard-navigable: arrows/j/k, Enter, Delete, m (tray
     // menu), Esc.
-    Mod+N hotkey-overlay-title="dmsh: notifications" { spawn "dmsh" "toggle" "right"; }
-    Mod+Ctrl+N hotkey-overlay-title="dmsh: clear notifications" { spawn "dmsh" "activity" "clear" "--right"; }
+    Mod+N hotkey-overlay-title="dmsh: notifications" { spawn "{dmsh}" "toggle" "right"; }
+    Mod+Ctrl+N hotkey-overlay-title="dmsh: clear notifications" { spawn "{dmsh}" "activity" "clear" "--right"; }
     // The center island: media controls, an activity's buttons, or the date.
-    Mod+I hotkey-overlay-title="dmsh: center island" { spawn "dmsh" "toggle" "center"; }
+    Mod+I hotkey-overlay-title="dmsh: center island" { spawn "{dmsh}" "toggle" "center"; }
 }
 "#;
 
@@ -243,7 +244,11 @@ fn main() -> Result<()> {
             call(&Request::Control { control, state }).map(|_| ())
         }
         Command::Niri => {
-            print!("{NIRI_SNIPPET}");
+            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            print!(
+                "{}",
+                NIRI_SNIPPET.replace("{dmsh}", &exe.display().to_string())
+            );
             Ok(())
         }
         Command::Activity(cmd) => activity(cmd),
