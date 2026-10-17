@@ -673,8 +673,17 @@ fn right_compact(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         let icon_size = 14.0;
         let style = TextStyle::new(12.5, Weight::Medium);
         let (t, tw, th) = text(m, &a.title, style, theme.text, theme.right_title_max, 1);
-        let title_x = x + icon_size + 6.0;
-        items.push(icon(a, theme, x, (h - icon_size) / 2.0, icon_size));
+        // "Microphone in use" right after it starts: the indicator already shows its icon.
+        let announced = a
+            .icon
+            .as_deref()
+            .is_some_and(|i| privacy.iter().any(|(name, _)| *name == i));
+        let title_x = if announced {
+            x - 4.0
+        } else {
+            items.push(icon(a, theme, x, (h - icon_size) / 2.0, icon_size));
+            x + icon_size + 6.0
+        };
         items.push(place(t, title_x, (h - th) / 2.0));
         x = title_x + tw;
         if right.total > 1 {
@@ -2064,6 +2073,22 @@ pub(crate) mod tests {
             _ => None,
         });
         assert_eq!(first_icon.as_deref(), Some("mic"), "before the newest item");
+
+        // The announcement of a capture doesn't repeat the indicator's icon.
+        v.right = Some(RightView {
+            items: vec![ActivityView {
+                icon: Some("mic".into()),
+                ..activity("privacy:mic", None)
+            }],
+            total: 1,
+        });
+        let announced = right_content(&v, false, &theme, &mut m).unwrap();
+        let mics = announced
+            .items
+            .iter()
+            .filter(|d| matches!(d, Draw::Icon(i) if i.name == "mic"))
+            .count();
+        assert_eq!(mics, 1);
     }
 
     #[test]
