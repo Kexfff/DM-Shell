@@ -477,6 +477,11 @@ impl Stage {
 
     /// The hit under `(x, y)` in surface coordinates, with the index of its island
     /// (0 = right, 1 = center). Content that is still mostly faded out isn't clickable.
+    /// The clickable area under the point, with its rect in surface coordinates.
+    pub fn hit_rect_at(&self, x: f32, y: f32) -> Option<Hit> {
+        self.hit_at(x, y).map(|(_, hit)| hit)
+    }
+
     fn hit_at(&self, x: f32, y: f32) -> Option<(usize, Hit)> {
         self.islands().enumerate().find_map(|(i, island)| {
             let rect = island.rect.current();

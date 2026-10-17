@@ -38,6 +38,10 @@ pub struct Options {
     pub dnd: bool,
     /// The session menu is open (`Some`), with this option held this far.
     pub session: Option<Option<(dmsh_core::SessionAction, f32)>>,
+    pub volume: Option<dmsh_core::Level>,
+    pub brightness: Option<dmsh_core::Level>,
+    /// The slider shown open.
+    pub slider: Option<dmsh_core::Slider>,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -76,6 +80,9 @@ pub fn render(opts: Options) -> Result<()> {
                 dnd: opts.dnd,
                 session_open: opts.session.is_some(),
                 session_hold: opts.session.flatten(),
+                volume: opts.volume,
+                brightness: opts.brightness,
+                slider: opts.slider,
             },
             ..activities.view(now)
         };

@@ -5,8 +5,8 @@
 //! the renderer implements it, tests use a fake.
 
 use crate::activity::{
-    Action, ActivityView, BatteryLevel, BatteryView, Control, Controls, DEFAULT_ACTION, MenuView,
-    Priority, SessionAction, TrayIconView, View,
+    Action, ActivityView, BatteryLevel, BatteryView, Control, Controls, DEFAULT_ACTION, Level,
+    MenuView, Priority, SessionAction, Slider, TrayIconView, View,
 };
 
 /// Axis-aligned rectangle in logical pixels.
@@ -311,6 +311,13 @@ pub enum Target {
     SessionMenu(bool),
     /// A session menu option: runs when held down long enough, not on a click.
     Session(SessionAction),
+    /// The volume or brightness button: a click opens its slider (holding the volume
+    /// one mutes instead).
+    Level(Slider),
+    /// The slider itself: press or drag to set, or scroll.
+    Slider(Slider),
+    /// Back from the slider to the buttons.
+    CloseSlider,
     /// Scroll the expanded right island's list by this many rows.
     Scroll(i32),
 }
@@ -808,6 +815,133 @@ fn session_row(
     }
 }
 
+fn level_icon(slider: Slider, level: Level) -> &'static str {
+    match slider {
+        Slider::Volume if level.muted || level.value <= 0.0 => "volume-mute",
+        Slider::Volume => "volume",
+        Slider::Brightness => "brightness",
+    }
+}
+
+/// Volume and brightness, below the controls: a pill button each showing the level, or
+/// the open slider in their place. Returns the row's height (0 without either).
+fn levels_row(
+    controls: &Controls,
+    y: f32,
+    w: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    draws: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) -> f32 {
+    let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
+    let levels: Vec<(Slider, Level)> = [
+        (Slider::Volume, controls.volume),
+        (Slider::Brightness, controls.brightness),
+    ]
+    .into_iter()
+    .filter_map(|(s, l)| Some((s, l?)))
+    .collect();
+    if levels.is_empty() {
+        return 0.0;
+    }
+    let style = TextStyle::new(12.5, Weight::Semibold);
+    let percent = |level: Level| format!("{}%", (level.value * 100.0).round() as i32);
+    let open = controls
+        .slider
+        .and_then(|s| levels.iter().find(|(l, _)| *l == s).copied());
+    let Some((slider, level)) = open else {
+        // Buttons, sharing the row.
+        let n = levels.len() as f32;
+        let bw = (w - 2.0 * pad - gap * (n - 1.0)) / n;
+        for (i, (slider, level)) in levels.into_iter().enumerate() {
+            let rect = Rect::new(pad + i as f32 * (bw + gap), y, bw, size);
+            draws.push(Draw::Rect(RoundRect::pill(rect, theme.button)));
+            let muted = slider == Slider::Volume && level.muted;
+            let (label, color) = if muted {
+                ("Muted".to_owned(), theme.text_secondary)
+            } else {
+                (percent(level), theme.text)
+            };
+            let (t, tw, th) = text(m, &label, style, color, bw - 50.0, 1);
+            let icon = 18.0;
+            let x = rect.x + (bw - icon - 8.0 - tw) / 2.0;
+            draws.push(Draw::Icon(IconDraw {
+                name: level_icon(slider, level).into(),
+                rect: Rect::new(x, y + (size - icon) / 2.0, icon, icon),
+                color,
+            }));
+            draws.push(place(t, x + icon + 8.0, y + (size - th) / 2.0));
+            hits.push(Hit {
+                rect,
+                target: Target::Level(slider),
+                highlight: true,
+                keyboard: true,
+            });
+        }
+        return size;
+    };
+    // The open slider: back button, track, and the level as text.
+    let back = Rect::new(pad, y, size, size);
+    round_button(
+        "chevron-left",
+        back,
+        Target::CloseSlider,
+        theme,
+        draws,
+        hits,
+    );
+    let label_w = 44.0;
+    let track = Rect::new(
+        back.right() + gap,
+        y,
+        w - pad - label_w - back.right() - gap,
+        size,
+    );
+    draws.push(Draw::Rect(RoundRect::pill(track, theme.button)));
+    // The fill starts as a circle around the icon and grows to the full track.
+    let muted = slider == Slider::Volume && level.muted;
+    let fill_color = if muted {
+        theme.text_secondary
+    } else {
+        theme.text
+    };
+    let fill_w = size + (track.w - size) * level.value.clamp(0.0, 1.0);
+    let fill = Rect::new(track.x, y, fill_w, size);
+    draws.push(Draw::Rect(RoundRect::pill(fill, fill_color)));
+    let icon = 18.0;
+    draws.push(Draw::Icon(IconDraw {
+        name: level_icon(slider, level).into(),
+        rect: Rect::new(
+            track.x + (size - icon) / 2.0,
+            y + (size - icon) / 2.0,
+            icon,
+            icon,
+        ),
+        color: theme.pill_color,
+    }));
+    let label = if muted {
+        "Muted".into()
+    } else {
+        percent(level)
+    };
+    let (t, tw, th) = text(m, &label, style, theme.text, label_w + 6.0, 1);
+    draws.push(place(t, w - pad - tw, y + (size - th) / 2.0));
+    hits.push(Hit {
+        rect: track,
+        target: Target::Slider(slider),
+        highlight: false,
+        keyboard: true,
+    });
+    size
+}
+
+/// Where on a slider track `x` falls, 0.0 to 1.0 (the icon circle at the left is 0).
+pub fn slider_value(track: Rect, x: f32) -> f32 {
+    let size = track.h;
+    ((x - track.x - size / 2.0) / (track.w - size).max(1.0)).clamp(0.0, 1.0)
+}
+
 /// Round icon buttons for the quick controls, from the left at `y`; returns where they end.
 fn controls_row(
     controls: &Controls,
@@ -1031,17 +1165,29 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     let slot = 34.0;
     let inline_x = controls_end + 10.0;
     let inline = inline_x + tray.len() as f32 * slot <= right_edge;
+    // Volume and brightness get the row below the controls.
+    let mut level_hits = Vec::new();
+    let levels_h = levels_row(
+        &view.controls,
+        y + row + 8.0,
+        w,
+        theme,
+        m,
+        &mut draws,
+        &mut level_hits,
+    );
+    let levels_space = if levels_h > 0.0 { levels_h + 8.0 } else { 0.0 };
+    let mut tray_hits = Vec::new();
     let (tray_x, tray_y) = if inline {
         (inline_x, y + (row - slot) / 2.0)
     } else {
-        // Tray on its own row below: the power button comes first.
-        hits.append(&mut power_hit);
-        (8.0, y + row + 6.0)
+        // Tray on its own row below the levels.
+        (8.0, y + row + levels_space + 6.0)
     };
     for (i, item) in tray.iter().enumerate() {
         let rect = Rect::new(tray_x + i as f32 * slot, tray_y, slot, slot);
         draws.push(tray_icon(item, theme, rect, 20.0));
-        hits.push(Hit {
+        tray_hits.push(Hit {
             rect,
             target: Target::Tray {
                 id: item.id.clone(),
@@ -1050,8 +1196,17 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
             keyboard: true,
         });
     }
-    hits.append(&mut power_hit);
-    y += row + 10.0;
+    // Keyboard order follows the rows.
+    if inline {
+        hits.append(&mut tray_hits);
+        hits.append(&mut power_hit);
+        hits.append(&mut level_hits);
+    } else {
+        hits.append(&mut power_hit);
+        hits.append(&mut level_hits);
+        hits.append(&mut tray_hits);
+    }
+    y += row + 10.0 + levels_space;
     if !inline && !tray.is_empty() {
         y += slot + 6.0;
     }
@@ -1656,6 +1811,87 @@ pub(crate) mod tests {
         let reboot = held.hits[2].rect;
         assert_eq!(fill.x, reboot.x);
         assert!(fill.w > CONTROL_SIZE && fill.w < reboot.w);
+    }
+
+    #[test]
+    fn volume_and_brightness_buttons_and_sliders() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[activity("a", None)]);
+        let targets = |c: &Content| -> Vec<Target> {
+            c.hits
+                .iter()
+                .filter(|h| {
+                    matches!(
+                        h.target,
+                        Target::Level(_) | Target::Slider(_) | Target::CloseSlider
+                    )
+                })
+                .map(|h| h.target.clone())
+                .collect()
+        };
+        let without = right_content(&v, true, &theme, &mut m).unwrap();
+        assert!(targets(&without).is_empty());
+
+        v.controls.volume = Some(Level {
+            value: 0.45,
+            muted: false,
+        });
+        v.controls.brightness = Some(Level {
+            value: 0.7,
+            muted: false,
+        });
+        let buttons = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(
+            targets(&buttons),
+            [
+                Target::Level(Slider::Volume),
+                Target::Level(Slider::Brightness)
+            ]
+        );
+        assert!(buttons.h > without.h, "a row of its own");
+        let label = |c: &Content, s: &str| {
+            c.items
+                .iter()
+                .any(|d| matches!(d, Draw::Text(t) if t.text == s))
+        };
+        assert!(label(&buttons, "45%") && label(&buttons, "70%"));
+        // Keyboard order: controls, power, then the levels, then the list.
+        let order: Vec<_> = buttons.hits.iter().map(|h| h.target.clone()).collect();
+        let power = order.iter().position(|t| *t == Target::SessionMenu(true));
+        let volume = order
+            .iter()
+            .position(|t| *t == Target::Level(Slider::Volume));
+        assert!(power < volume);
+
+        v.controls.volume.as_mut().unwrap().muted = true;
+        let muted = right_content(&v, true, &theme, &mut m).unwrap();
+        assert!(label(&muted, "Muted"));
+
+        v.controls.slider = Some(Slider::Volume);
+        let slider = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(
+            targets(&slider),
+            [Target::CloseSlider, Target::Slider(Slider::Volume)]
+        );
+        assert_eq!(slider.h, buttons.h, "same height, no jump");
+
+        // A slider for a level that went away falls back to the buttons.
+        v.controls.slider = Some(Slider::Brightness);
+        v.controls.brightness = None;
+        let gone = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(targets(&gone), [Target::Level(Slider::Volume)]);
+    }
+
+    #[test]
+    fn slider_value_maps_the_track() {
+        let track = Rect::new(100.0, 0.0, 238.0, 38.0);
+        // The icon circle at the left is 0, the right end's circle center is 1.
+        assert_eq!(slider_value(track, 100.0), 0.0);
+        assert_eq!(slider_value(track, 119.0), 0.0);
+        assert_eq!(slider_value(track, 219.0), 0.5);
+        assert_eq!(slider_value(track, 319.0), 1.0);
+        assert_eq!(slider_value(track, 500.0), 1.0);
     }
 
     #[test]

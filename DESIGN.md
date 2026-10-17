@@ -37,7 +37,12 @@ Both are solid black, Apple-style pills (the first and default theme).
   controls** (Wi-Fi on/off via NetworkManager, "Keep awake" via the Wayland idle-inhibit
   protocol), a power button for the **session menu** (Shut down, Reboot, Log out —
   each runs only when held until it fills, ~0.8 s, mouse or Enter; commands
-  configurable), tray icons, battery — and the list. Dark monochrome tray icons (from icon
+  configurable), tray icons, battery — then a row with **volume and brightness**
+  buttons showing their levels. Clicking one swaps the row for a slider (drag, wheel,
+  or ← → in 5% steps); holding the volume button (~0.45 s) toggles mute instead.
+  Volume is set with `wpctl`, brightness through logind's `SetBrightness` (no extra
+  permissions, never below 1 so the panel doesn't go dark); changes made from the
+  slider don't also raise the center OSD. Then the list. Dark monochrome tray icons (from icon
   themes made for light panels) are tinted light so they show on the black pill.
   Critical battery also takes the center until charging. **Do not disturb** sends `flow`
   activities below critical straight to the right island (a moon shows there). The list

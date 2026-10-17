@@ -9,12 +9,12 @@ mod layout;
 
 pub use activity::{
     Action, Activities, ActivitySpec, ActivityView, BatteryLevel, BatteryView, Control, Controls,
-    DEFAULT_ACTION, MenuEntryView, MenuView, Placement, Priority, SessionAction, TrayIconView,
-    View,
+    DEFAULT_ACTION, Level, MenuEntryView, MenuView, Placement, Priority, SessionAction, Slider,
+    TrayIconView, View,
 };
 pub use anim::{IslandKind, Stage};
 pub use layout::{
     Align, Color, Content, Draw, Group, Hit, IconDraw, ImageDraw, LIST_ROWS, MENU_ROWS, Measure,
     Motion, Rect, RoundRect, Scene, Target, TextDraw, TextStyle, Theme, Weight, center_content,
-    right_content,
+    right_content, slider_value,
 };

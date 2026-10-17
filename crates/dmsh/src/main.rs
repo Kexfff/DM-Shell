@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use dmsh_core::{
-    Action, ActivitySpec, Control, IslandKind, Placement, Priority, SessionAction,
+    Action, ActivitySpec, Control, IslandKind, Level, Placement, Priority, SessionAction, Slider,
     activity::Island,
     ipc::{Reply, Request, Response},
 };
@@ -142,6 +142,15 @@ enum Command {
         /// e.g. `--session reboot:0.6`.
         #[arg(long, num_args = 0..=1, default_missing_value = "")]
         session: Option<String>,
+        /// Show the volume button at this percent (`45:muted` for muted).
+        #[arg(long)]
+        volume: Option<String>,
+        /// Show the brightness button at this percent.
+        #[arg(long)]
+        brightness: Option<String>,
+        /// Show a slider open: volume or brightness.
+        #[arg(long, value_parser = ["volume", "brightness"])]
+        slider: Option<String>,
     },
 }
 
@@ -361,7 +370,16 @@ fn main() -> Result<()> {
             wifi,
             dnd,
             session,
+            volume,
+            brightness,
+            slider,
         } => headless::render(headless::Options {
+            volume: volume.as_deref().map(parse_level).transpose()?,
+            brightness: brightness.as_deref().map(parse_level).transpose()?,
+            slider: slider.map(|s| match s.as_str() {
+                "volume" => Slider::Volume,
+                _ => Slider::Brightness,
+            }),
             session: session
                 .as_deref()
                 .map(parse_session)
@@ -473,6 +491,21 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 /// Parses `76` or `76+` (charging).
+/// `45` or `45:muted`.
+fn parse_level(s: &str) -> Result<Level> {
+    let (percent, muted) = match s.strip_suffix(":muted") {
+        Some(p) => (p, true),
+        None => (s, false),
+    };
+    let percent: f32 = percent
+        .parse()
+        .with_context(|| format!("`{s}` isn't a percent like 45 or 45:muted"))?;
+    Ok(Level {
+        value: percent / 100.0,
+        muted,
+    })
+}
+
 fn parse_session(s: &str) -> Result<Option<(SessionAction, f32)>, String> {
     if s.is_empty() {
         return Ok(None);

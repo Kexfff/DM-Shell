@@ -14,7 +14,7 @@ mod niri;
 mod notifications;
 mod power;
 pub mod tray;
-mod volume;
+pub mod volume;
 
 use std::future::Future;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
@@ -44,6 +44,10 @@ pub enum Event {
     Battery(dmsh_core::BatteryView),
     /// Wi-Fi radio on/off; sent only when there is a Wi-Fi device.
     Wifi(bool),
+    /// The default audio sink's volume, at startup and whenever it changes.
+    Volume(dmsh_core::Level),
+    /// The backlight level, at startup and whenever it changes.
+    Brightness(dmsh_core::Level),
     /// Raw pixels an activity refers to as its `image` (`key`), e.g. a notification's
     /// avatar. Premultiplied RGBA; `icon` marks artwork rather than a photo.
     Image {
@@ -71,6 +75,9 @@ pub enum Command {
     Tray(tray::Command),
     /// Turn the Wi-Fi radio on or off.
     SetWifi(bool),
+    SetVolume(volume::SetVolume),
+    /// 0.0 to 1.0.
+    SetBrightness(f32),
 }
 
 /// Lets the shell send [`Command`]s to the sources thread.
@@ -125,15 +132,20 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     let (media_tx, media_rx) = mpsc::unbounded_channel();
     let (tray_tx, tray_rx) = mpsc::unbounded_channel();
     let (network_tx, network_rx) = mpsc::unbounded_channel();
+    let (volume_tx, volume_rx) = mpsc::unbounded_channel();
+    let (brightness_tx, brightness_rx) = mpsc::unbounded_channel();
 
     let enabled = emitter.config().sources.clone();
     tokio::spawn(supervise("clock", clock::run(emitter.clone())));
     tokio::spawn(supervise("niri", niri::run(emitter.clone())));
     if enabled.volume {
-        tokio::spawn(supervise("volume", volume::run(emitter.clone())));
+        tokio::spawn(supervise("volume", volume::run(emitter.clone(), volume_rx)));
     }
     if enabled.brightness {
-        tokio::spawn(supervise("brightness", brightness::run(emitter.clone())));
+        tokio::spawn(supervise(
+            "brightness",
+            brightness::run(emitter.clone(), brightness_rx),
+        ));
     }
     if enabled.media {
         tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));
@@ -177,6 +189,12 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
             }
             Command::SetWifi(on) => {
                 let _ = network_tx.send(on);
+            }
+            Command::SetVolume(set) => {
+                let _ = volume_tx.send(set);
+            }
+            Command::SetBrightness(value) => {
+                let _ = brightness_tx.send(value);
             }
         }
     }
@@ -251,3 +269,7 @@ impl Emitter {
 /// Bursty sources (a held volume key, a flapping connection) wait this long after an
 /// event for more before reporting once.
 const SETTLE: Duration = Duration::from_millis(15);
+
+/// After the islands change the volume or brightness, changes for this long don't show
+/// an OSD (the slider already shows them).
+const QUIET_AFTER_SET: Duration = Duration::from_secs(1);

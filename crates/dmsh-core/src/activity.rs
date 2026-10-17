@@ -274,6 +274,32 @@ pub struct Controls {
     /// The option being held, and how far along (0.0 to 1.0).
     #[serde(skip)]
     pub session_hold: Option<(SessionAction, f32)>,
+    /// Output volume of the default audio sink; `None` without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<Level>,
+    /// Display backlight; `None` without a backlight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<Level>,
+    /// The slider open in place of the volume and brightness buttons.
+    #[serde(skip)]
+    pub slider: Option<Slider>,
+}
+
+/// A volume or brightness level.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Level {
+    /// 0.0 to 1.0 (volume can go past 1.0 when boosted elsewhere).
+    pub value: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+}
+
+/// The levels the expanded right island has sliders for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Slider {
+    Volume,
+    Brightness,
 }
 
 /// What the session menu can do; each runs a configurable command.
