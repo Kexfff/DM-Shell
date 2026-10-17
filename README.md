@@ -31,8 +31,8 @@ AI agents can put things on the islands and wait for answers.
 - **Battery** always on the right island; a critical battery also takes the center.
 - **Quick controls**: Wi-Fi on/off, do not disturb (notifications skip the center unless
   critical) and "Keep awake".
-- **Volume and brightness**: buttons showing the level; click one for a slider (drag,
-  scroll or arrow keys), hold the volume one to mute.
+- **Volume and brightness**: quick-control buttons that open a slider (drag, scroll or
+  arrow keys); hold the volume one to mute.
 - **Session menu**: the power button opens Shut down · Reboot · Log out; hold one until
   it fills to run it, so a stray click never logs you out.
 - **niri integration**: focused-monitor awareness, keyboard-layout and screencast

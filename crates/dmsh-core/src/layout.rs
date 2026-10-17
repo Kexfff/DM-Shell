@@ -353,7 +353,9 @@ pub const LIST_ROWS: usize = 6;
 /// Menu entries visible at once; longer tray menus scroll.
 pub const MENU_ROWS: usize = 12;
 /// Diameter of the round quick-control buttons.
-const CONTROL_SIZE: f32 = 38.0;
+const CONTROL_SIZE: f32 = 36.0;
+/// Space between them.
+const CONTROL_GAP: f32 = 6.0;
 
 /// Collapsed or expanded content for the center island.
 pub fn center_content(view: &View, expanded: bool, theme: &Theme, m: &mut dyn Measure) -> Content {
@@ -769,7 +771,7 @@ fn session_row(
     draws: &mut Vec<Draw>,
     hits: &mut Vec<Hit>,
 ) {
-    let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
+    let (size, gap, pad) = (CONTROL_SIZE, CONTROL_GAP, 10.0);
     let back = Rect::new(pad, y, size, size);
     round_button(
         "chevron-left",
@@ -823,65 +825,18 @@ fn level_icon(slider: Slider, level: Level) -> &'static str {
     }
 }
 
-/// Volume and brightness, below the controls: a pill button each showing the level, or
-/// the open slider in their place. Returns the row's height (0 without either).
-fn levels_row(
-    controls: &Controls,
+/// The open volume or brightness slider in place of the controls row: back button,
+/// track, and the level as text.
+fn slider_row(
+    (slider, level): (Slider, Level),
     y: f32,
     w: f32,
     theme: &Theme,
     m: &mut dyn Measure,
     draws: &mut Vec<Draw>,
     hits: &mut Vec<Hit>,
-) -> f32 {
-    let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
-    let levels: Vec<(Slider, Level)> = [
-        (Slider::Volume, controls.volume),
-        (Slider::Brightness, controls.brightness),
-    ]
-    .into_iter()
-    .filter_map(|(s, l)| Some((s, l?)))
-    .collect();
-    if levels.is_empty() {
-        return 0.0;
-    }
-    let style = TextStyle::new(12.5, Weight::Semibold);
-    let percent = |level: Level| format!("{}%", (level.value * 100.0).round() as i32);
-    let open = controls
-        .slider
-        .and_then(|s| levels.iter().find(|(l, _)| *l == s).copied());
-    let Some((slider, level)) = open else {
-        // Buttons, sharing the row.
-        let n = levels.len() as f32;
-        let bw = (w - 2.0 * pad - gap * (n - 1.0)) / n;
-        for (i, (slider, level)) in levels.into_iter().enumerate() {
-            let rect = Rect::new(pad + i as f32 * (bw + gap), y, bw, size);
-            draws.push(Draw::Rect(RoundRect::pill(rect, theme.button)));
-            let muted = slider == Slider::Volume && level.muted;
-            let (label, color) = if muted {
-                ("Muted".to_owned(), theme.text_secondary)
-            } else {
-                (percent(level), theme.text)
-            };
-            let (t, tw, th) = text(m, &label, style, color, bw - 50.0, 1);
-            let icon = 18.0;
-            let x = rect.x + (bw - icon - 8.0 - tw) / 2.0;
-            draws.push(Draw::Icon(IconDraw {
-                name: level_icon(slider, level).into(),
-                rect: Rect::new(x, y + (size - icon) / 2.0, icon, icon),
-                color,
-            }));
-            draws.push(place(t, x + icon + 8.0, y + (size - th) / 2.0));
-            hits.push(Hit {
-                rect,
-                target: Target::Level(slider),
-                highlight: true,
-                keyboard: true,
-            });
-        }
-        return size;
-    };
-    // The open slider: back button, track, and the level as text.
+) {
+    let (size, gap, pad) = (CONTROL_SIZE, CONTROL_GAP, 10.0);
     let back = Rect::new(pad, y, size, size);
     round_button(
         "chevron-left",
@@ -921,10 +876,11 @@ fn levels_row(
         color: theme.pill_color,
     }));
     let label = if muted {
-        "Muted".into()
+        "Muted".to_owned()
     } else {
-        percent(level)
+        format!("{}%", (level.value * 100.0).round() as i32)
     };
+    let style = TextStyle::new(12.5, Weight::Semibold);
     let (t, tw, th) = text(m, &label, style, theme.text, label_w + 6.0, 1);
     draws.push(place(t, w - pad - tw, y + (size - th) / 2.0));
     hits.push(Hit {
@@ -933,7 +889,6 @@ fn levels_row(
         highlight: false,
         keyboard: true,
     });
-    size
 }
 
 /// Where on a slider track `x` falls, 0.0 to 1.0 (the icon circle at the left is 0).
@@ -957,11 +912,23 @@ fn controls_row(
     }
     buttons.push(("moon", controls.dnd, Control::Dnd));
     buttons.push(("coffee", controls.keep_awake, Control::KeepAwake));
-    let (size, gap, pad) = (CONTROL_SIZE, 8.0, 10.0);
+    let (size, gap, pad) = (CONTROL_SIZE, CONTROL_GAP, 10.0);
     let mut x = pad;
     for (icon, on, control) in buttons {
         let rect = Rect::new(x, y, size, size);
         control_button(icon, on, rect, control, theme, draws, hits);
+        x += size + gap;
+    }
+    // Volume and brightness open a slider in place of this row.
+    let levels = [
+        (Slider::Volume, controls.volume),
+        (Slider::Brightness, controls.brightness),
+    ];
+    for (slider, level) in levels {
+        let Some(level) = level else { continue };
+        let rect = Rect::new(x, y, size, size);
+        let icon = level_icon(slider, level);
+        round_button(icon, rect, Target::Level(slider), theme, draws, hits);
         x += size + gap;
     }
     x - gap
@@ -1131,58 +1098,66 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     // (on their own row when they don't fit).
     let mut y = 10.0;
     let row = CONTROL_SIZE;
-    // The session menu takes the whole row while it's open.
-    let session = view.controls.session_open;
-    let controls_end = if session {
-        session_row(&view.controls, y, w, theme, m, &mut draws, &mut hits);
+    // The session menu or a slider takes the whole row while it's open.
+    let c = &view.controls;
+    let slider = c.slider.and_then(|s| match s {
+        Slider::Volume => c.volume.map(|l| (s, l)),
+        Slider::Brightness => c.brightness.map(|l| (s, l)),
+    });
+    let taken = c.session_open || slider.is_some();
+    let controls_end = if c.session_open {
+        session_row(c, y, w, theme, m, &mut draws, &mut hits);
+        w
+    } else if let Some(open) = slider {
+        slider_row(open, y, w, theme, m, &mut draws, &mut hits);
         w
     } else {
-        controls_row(&view.controls, y, theme, &mut draws, &mut hits)
+        controls_row(c, y, theme, &mut draws, &mut hits)
     };
-    let tray: &[TrayIconView] = if session { &[] } else { tray };
+    let tray: &[TrayIconView] = if taken { &[] } else { tray };
     // The power button sits at the far right, out of the way of the controls; its hit
     // goes in after the tray's so keyboard order follows the row.
     let mut power_hit = Vec::new();
     let mut right_edge = w - 14.0;
-    if !session {
+    if !taken {
         let rect = Rect::new(w - 10.0 - row, y, row, row);
         let target = Target::SessionMenu(true);
         round_button("power", rect, target, theme, &mut draws, &mut power_hit);
-        right_edge = rect.x - 10.0;
+        right_edge = rect.x - 8.0;
     }
-    if let Some(battery) = view.battery.as_ref().filter(|_| !session) {
-        let style = TextStyle::new(12.5, Weight::Semibold);
-        let charging = if battery.charging { " · Charging" } else { "" };
-        let label = format!("{}%{charging}", battery.percent);
-        let (t, tw, th) = text(m, &label, style, theme.text, 160.0, 1);
-        let tx = right_edge - tw;
-        draws.push(place(t, tx, y + (row - th) / 2.0));
+    if let Some(battery) = view.battery.as_ref().filter(|_| !taken) {
+        // As much as fits between the controls and the power button: "76% · Charging",
+        // "76%", or the icon alone (it shows charging and the level too).
         let size = 22.0;
-        let icon_rect = Rect::new(tx - size - 4.0, y + (row - size) / 2.0, size, size);
+        let room = right_edge - (controls_end + 8.0) - size;
+        let style = TextStyle::new(12.5, Weight::Semibold);
+        let percent = format!("{}%", battery.percent);
+        let mut labels = vec![percent.clone()];
+        if battery.charging {
+            labels.insert(0, format!("{percent} · Charging"));
+        }
+        let label = labels.into_iter().find_map(|label| {
+            let (t, tw, th) = text(m, &label, style, theme.text, 160.0, 1);
+            (tw + 3.0 <= room).then_some((t, tw, th))
+        });
+        let mut x = right_edge;
+        if let Some((t, tw, th)) = label {
+            x -= tw;
+            draws.push(place(t, x, y + (row - th) / 2.0));
+            x -= 3.0;
+        }
+        let icon_rect = Rect::new(x - size, y + (row - size) / 2.0, size, size);
         draws.extend(battery_icon(battery, theme, icon_rect));
         right_edge = icon_rect.x - 6.0;
     }
     let slot = 34.0;
     let inline_x = controls_end + 10.0;
     let inline = inline_x + tray.len() as f32 * slot <= right_edge;
-    // Volume and brightness get the row below the controls.
-    let mut level_hits = Vec::new();
-    let levels_h = levels_row(
-        &view.controls,
-        y + row + 8.0,
-        w,
-        theme,
-        m,
-        &mut draws,
-        &mut level_hits,
-    );
-    let levels_space = if levels_h > 0.0 { levels_h + 8.0 } else { 0.0 };
     let mut tray_hits = Vec::new();
     let (tray_x, tray_y) = if inline {
         (inline_x, y + (row - slot) / 2.0)
     } else {
-        // Tray on its own row below the levels.
-        (8.0, y + row + levels_space + 6.0)
+        (8.0, y + row + 6.0)
     };
     for (i, item) in tray.iter().enumerate() {
         let rect = Rect::new(tray_x + i as f32 * slot, tray_y, slot, slot);
@@ -1200,13 +1175,11 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     if inline {
         hits.append(&mut tray_hits);
         hits.append(&mut power_hit);
-        hits.append(&mut level_hits);
     } else {
         hits.append(&mut power_hit);
-        hits.append(&mut level_hits);
         hits.append(&mut tray_hits);
     }
-    y += row + 10.0 + levels_space;
+    y += row + 10.0;
     if !inline && !tray.is_empty() {
         y += slot + 6.0;
     }
@@ -1329,7 +1302,7 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         h: y + 8.0,
         items: draws,
         hits,
-        key: if session { "r:list:session" } else { "r:list" }.into(),
+        key: if taken { "r:list:taken" } else { "r:list" }.into(),
     }
 }
 
@@ -1849,38 +1822,90 @@ pub(crate) mod tests {
                 Target::Level(Slider::Brightness)
             ]
         );
-        assert!(buttons.h > without.h, "a row of its own");
-        let label = |c: &Content, s: &str| {
+        // Round buttons in the controls row, after keep awake: no extra row, no text.
+        assert_eq!(buttons.h, without.h);
+        let hit = |c: &Content, t: &Target| c.hits.iter().find(|h| h.target == *t).unwrap().rect;
+        let awake = hit(&buttons, &Target::Control(Control::KeepAwake));
+        let volume = hit(&buttons, &Target::Level(Slider::Volume));
+        assert_eq!((volume.y, volume.w, volume.h), (awake.y, awake.w, awake.h));
+        assert!(volume.x > awake.x);
+        let has_text = |c: &Content, s: &str| {
             c.items
                 .iter()
                 .any(|d| matches!(d, Draw::Text(t) if t.text == s))
         };
-        assert!(label(&buttons, "45%") && label(&buttons, "70%"));
-        // Keyboard order: controls, power, then the levels, then the list.
-        let order: Vec<_> = buttons.hits.iter().map(|h| h.target.clone()).collect();
-        let power = order.iter().position(|t| *t == Target::SessionMenu(true));
-        let volume = order
-            .iter()
-            .position(|t| *t == Target::Level(Slider::Volume));
-        assert!(power < volume);
-
+        assert!(!has_text(&buttons, "45%"));
+        let icons = |c: &Content| -> Vec<String> {
+            c.items
+                .iter()
+                .filter_map(|d| match d {
+                    Draw::Icon(i) => Some(i.name.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(icons(&buttons).contains(&"volume".to_owned()));
         v.controls.volume.as_mut().unwrap().muted = true;
         let muted = right_content(&v, true, &theme, &mut m).unwrap();
-        assert!(label(&muted, "Muted"));
+        assert!(icons(&muted).contains(&"volume-mute".to_owned()));
 
+        // The slider takes the whole controls row, like the session menu.
         v.controls.slider = Some(Slider::Volume);
         let slider = right_content(&v, true, &theme, &mut m).unwrap();
         assert_eq!(
             targets(&slider),
             [Target::CloseSlider, Target::Slider(Slider::Volume)]
         );
+        assert!(has_text(&slider, "Muted"));
+        assert!(
+            !slider
+                .hits
+                .iter()
+                .any(|h| matches!(h.target, Target::Control(_) | Target::SessionMenu(_)))
+        );
         assert_eq!(slider.h, buttons.h, "same height, no jump");
+        assert_ne!(slider.key, buttons.key, "opening cross-fades");
 
         // A slider for a level that went away falls back to the buttons.
         v.controls.slider = Some(Slider::Brightness);
         v.controls.brightness = None;
         let gone = right_content(&v, true, &theme, &mut m).unwrap();
         assert_eq!(targets(&gone), [Target::Level(Slider::Volume)]);
+    }
+
+    #[test]
+    fn battery_label_shortens_when_the_row_is_full() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        v.battery = Some(BatteryView {
+            percent: 76,
+            charging: true,
+            level: BatteryLevel::Normal,
+        });
+        let label = |v: &View, m: &mut FakeMeasure| {
+            right_content(v, true, &theme, m)
+                .unwrap()
+                .items
+                .iter()
+                .find_map(|d| match d {
+                    Draw::Text(t) if t.text.contains('%') => Some(t.text.clone()),
+                    _ => None,
+                })
+        };
+        assert_eq!(label(&v, &mut m).as_deref(), Some("76% · Charging"));
+        v.controls.wifi = Some(true);
+        let level = Some(Level {
+            value: 0.5,
+            muted: false,
+        });
+        v.controls.volume = level;
+        v.controls.brightness = level;
+        let short = label(&v, &mut m);
+        assert!(
+            short.is_none() || short.as_deref() == Some("76%"),
+            "{short:?}"
+        );
     }
 
     #[test]
