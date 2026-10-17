@@ -29,8 +29,9 @@ dmsh reads niri's event stream (`$NIRI_SOCKET`):
 - **Focused monitor** — transient center events (notifications, OSDs) appear only on
   the focused monitor; the right island is the same on every monitor.
 - **Keyboard layout** — an overlay when the layout switches.
-- **Screencasts** — "Screen is being shared" on the right island while a niri
-  screencast is active.
+- **Screencasts** — a red screen icon on the right island while a niri screencast is
+  active, with "Screen is being shared" for a few seconds when it starts. (Microphone
+  and camera get the same treatment, from PipeWire and `/dev/video*`.)
 
 ## Keyboard navigation
 

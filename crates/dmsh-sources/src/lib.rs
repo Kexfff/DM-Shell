@@ -7,8 +7,10 @@
 //! (service missing, name taken) logs a warning and the others keep running.
 
 mod brightness;
+mod camera;
 mod clock;
 mod media;
+mod microphone;
 mod network;
 mod niri;
 mod notifications;
@@ -21,7 +23,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
 pub use dmsh_core::ipc::Removal;
-use dmsh_core::{ActivitySpec, Placement, config::Config, ipc::Request};
+use dmsh_core::{ActivitySpec, Placement, Sensor, config::Config, ipc::Request};
 use tokio::sync::{Notify, mpsc};
 
 /// What sources tell the shell.
@@ -48,6 +50,8 @@ pub enum Event {
     Volume(dmsh_core::Level),
     /// The backlight level, at startup and whenever it changes.
     Brightness(dmsh_core::Level),
+    /// The screen, a microphone or a camera started or stopped being captured.
+    Privacy(dmsh_core::Sensor, bool),
     /// Raw pixels an activity refers to as its `image` (`key`), e.g. a notification's
     /// avatar. Premultiplied RGBA; `icon` marks artwork rather than a photo.
     Image {
@@ -146,6 +150,12 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
             "brightness",
             brightness::run(emitter.clone(), brightness_rx),
         ));
+    }
+    if enabled.microphone {
+        tokio::spawn(supervise("microphone", microphone::run(emitter.clone())));
+    }
+    if enabled.camera {
+        tokio::spawn(supervise("camera", camera::run(emitter.clone())));
     }
     if enabled.media {
         tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));
@@ -252,6 +262,29 @@ impl Emitter {
             ttl_ms: Some(self.config().timing.osd.as_millis() as u64),
             ..ActivitySpec::new(id, title)
         }
+    }
+
+    /// Something started capturing the user: the indicator icon, plus "… in use" on the
+    /// right island for `timing.status`. `on: false` takes both away.
+    fn capture(&self, sensor: Sensor, on: bool, apps: &[String]) {
+        let (id, icon, title) = match sensor {
+            Sensor::Screen => ("privacy:screen", "screen-share", "Screen is being shared"),
+            Sensor::Mic => ("privacy:mic", "mic", "Microphone in use"),
+            Sensor::Camera => ("privacy:camera", "camera", "Camera in use"),
+        };
+        self.emit(Event::Privacy(sensor, on));
+        if !on {
+            self.dismiss(id);
+            return;
+        }
+        self.push(ActivitySpec {
+            icon: Some(icon.into()),
+            app: (!apps.is_empty()).then(|| apps.join(", ")),
+            placement: Placement::Right,
+            priority: dmsh_core::Priority::High,
+            ttl_ms: Some(self.config().timing.status.as_millis() as u64),
+            ..ActivitySpec::new(id, title)
+        });
     }
 
     /// A short right-island status message (Wi-Fi, charger).

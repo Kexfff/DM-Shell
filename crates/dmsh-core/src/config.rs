@@ -83,6 +83,8 @@ pub struct Sources {
     pub network: bool,
     pub keyboard_layout: bool,
     pub screencast: bool,
+    pub microphone: bool,
+    pub camera: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -115,6 +117,8 @@ impl Default for Config {
                 network: true,
                 keyboard_layout: true,
                 screencast: true,
+                microphone: true,
+                camera: true,
             },
             timing: Timing {
                 osd: Duration::from_millis(1500),
@@ -392,6 +396,8 @@ impl Parser<'_> {
                 "network" => &mut sources.network,
                 "keyboard-layout" => &mut sources.keyboard_layout,
                 "screencast" => &mut sources.screencast,
+                "microphone" => &mut sources.microphone,
+                "camera" => &mut sources.camera,
                 other => return Err(self.error(node, format!("unknown source `{other}`"))),
             };
             *slot = self.flag(node)?;

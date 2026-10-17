@@ -29,7 +29,9 @@ Both are solid black, Apple-style pills (the first and default theme).
 
 - **Center island** — the single most important thing right now. Idle content: clock.
   Expands (floating over windows) on hover/click. When media is playing or paused, the
-  expanded center shows media controls.
+  expanded center shows media controls. Lasting center activities (media, an agent's
+  status) show the clock beside them, compact and expanded, so the time is never hidden
+  for long; brief ones (OSDs, a new notification) cover it.
 - **Right island** — less important, ambient things: chat messages, Wi-Fi changes, the
   system tray, and the battery (always visible on laptops: a fill-level icon and percent,
   orange when low, red when critical, green bolt while charging). Shows the newest item
@@ -125,9 +127,17 @@ the rest keep running. Nothing polls: every source is event-driven.
 
 | Source | Mechanism | Shows |
 |---|---|---|
-| niri | event stream on `$NIRI_SOCKET` | focused output; keyboard layout OSD; "Screen is being shared" (right, while a cast is active) |
+| niri | event stream on `$NIRI_SOCKET` | focused output; keyboard layout OSD; screen-share indicator while a cast is active |
+| microphone | `pactl subscribe`, then `pactl -f json list source-outputs` on stream/source events | microphone indicator while something records from a real source (not a monitor, not pavucontrol's meters, not paused) |
+| camera | inotify (open/close) on `/dev/video*` and new ones in `/dev`, settled 1 s, then a `/proc/*/fd` scan | camera indicator while a process has a camera open |
 | clock | one wakeup per minute boundary | idle center text (`view.clock`) |
 | volume | `pactl subscribe`, then `wpctl get-volume` only on sink/server events | center OSD, 1.5 s |
+
+Capture indicators (screen red, microphone orange, camera green) sit first in the
+compact right island for as long as the capture lasts; when one starts (or another app
+joins in), "Screen is being shared" / "Microphone in use" / "Camera in use", with the
+app's name when known, shows on the right island for `timing.status`.
+
 | brightness | inotify on `/sys/class/backlight/*/brightness` | center OSD, 1.5 s |
 | media | MPRIS on the session bus (playerctld ignored) | center, low priority; newest playing player, else newest paused (kept 5 min) |
 | power | UPower `DisplayDevice` | right: charging / on battery / fully charged; battery low ≤ 20 % (flow, high), critical ≤ 5 % (center, critical) |

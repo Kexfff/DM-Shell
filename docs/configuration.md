@@ -122,6 +122,8 @@ sources {
     network true
     keyboard-layout true
     screencast true
+    microphone true
+    camera true
 }
 ```
 
@@ -138,7 +140,9 @@ Turns event sources on or off; all are on by default. A bare name means `true`
 | `power` | Battery indicator, charger messages, low and critical warnings. |
 | `network` | Wi-Fi connect/disconnect messages and the Wi-Fi toggle. |
 | `keyboard-layout` | OSD when the keyboard layout changes (niri). |
-| `screencast` | "Screen is being shared" while a niri screencast is active. |
+| `screencast` | A red screen icon on the right island while a niri screencast is active ("Screen is being shared" for a few seconds when it starts). |
+| `microphone` | An orange microphone icon while an app records from a microphone (not from a speaker's monitor), via `pactl`. |
+| `camera` | A green camera icon while an app has a camera (`/dev/video*`) open. |
 
 ## `timing`
 

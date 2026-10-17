@@ -42,6 +42,7 @@ pub struct Options {
     pub brightness: Option<dmsh_core::Level>,
     /// The slider shown open.
     pub slider: Option<dmsh_core::Slider>,
+    pub privacy: dmsh_core::Privacy,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -84,6 +85,7 @@ pub fn render(opts: Options) -> Result<()> {
                 brightness: opts.brightness,
                 slider: opts.slider,
             },
+            privacy: opts.privacy,
             ..activities.view(now)
         };
         let hover = opts.hover.filter(|_| t >= opts.hover_at);

@@ -9,8 +9,8 @@ mod layout;
 
 pub use activity::{
     Action, Activities, ActivitySpec, ActivityView, BatteryLevel, BatteryView, Control, Controls,
-    DEFAULT_ACTION, Level, MenuEntryView, MenuView, Placement, Priority, SessionAction, Slider,
-    TrayIconView, View,
+    DEFAULT_ACTION, Level, MenuEntryView, MenuView, Placement, Priority, Privacy, Sensor,
+    SessionAction, Slider, TrayIconView, View,
 };
 pub use anim::{IslandKind, Stage};
 pub use layout::{

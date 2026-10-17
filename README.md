@@ -26,7 +26,8 @@ AI agents can put things on the islands and wait for answers.
   (avatars), actions, urgency and replace ids; markup is cleaned to plain text. A
   scrollable list on the right island with per-item dismiss and "Clear all".
 - **On-screen displays** for volume, brightness and keyboard layout.
-- **Media** (MPRIS): what's playing, with previous / play-pause / next when expanded.
+- **Media** (MPRIS): what's playing, with the clock beside it, and previous / play-pause /
+  next when expanded.
 - **System tray** (StatusNotifierItem) with app menus shown inside the island.
 - **Battery** always on the right island; a critical battery also takes the center.
 - **Quick controls**: Wi-Fi on/off, do not disturb (notifications skip the center unless
@@ -35,8 +36,10 @@ AI agents can put things on the islands and wait for answers.
   arrow keys); hold the volume one to mute.
 - **Session menu**: the power button opens Shut down · Reboot · Log out; hold one until
   it fills to run it, so a stray click never logs you out.
-- **niri integration**: focused-monitor awareness, keyboard-layout and screencast
-  indicators, keybind toggles with full keyboard navigation.
+- **Privacy indicators**: screen sharing, microphone and camera each show an icon while
+  in use, announced by name for a few seconds when they start.
+- **niri integration**: focused-monitor awareness, keyboard-layout indicator, keybind
+  toggles with full keyboard navigation.
 - **Hover to expand**, click to act; spring animations throughout.
 - **Live-reloaded KDL config**: colors, font, sizes, clock format, animation, monitors.
 - **For agents**: Claude Code hooks (status and Allow/Deny permission prompts in the

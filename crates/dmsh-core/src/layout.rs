@@ -362,8 +362,8 @@ pub fn center_content(view: &View, expanded: bool, theme: &Theme, m: &mut dyn Me
     match (&view.center, expanded) {
         (None, false) => idle(view, theme, m),
         (None, true) => idle_expanded(view, theme, m),
-        (Some(a), false) => activity_compact(a, theme, m),
-        (Some(a), true) => activity_expanded(a, theme, m),
+        (Some(a), false) => activity_compact(a, clock_beside(view, a), theme, m),
+        (Some(a), true) => activity_expanded(a, clock_beside(view, a), theme, m),
     }
 }
 
@@ -377,7 +377,10 @@ pub fn right_content(
     if let Some(menu) = &view.menu {
         return Some(menu_list(menu, theme, m));
     }
-    let empty = view.right.is_none() && view.tray.is_empty() && view.battery.is_none();
+    let empty = view.right.is_none()
+        && view.tray.is_empty()
+        && view.battery.is_none()
+        && !view.privacy.any();
     match expanded {
         // Expanded always has the quick controls, even with nothing else to show.
         true => Some(right_list(view, theme, m)),
@@ -488,7 +491,18 @@ fn idle_expanded(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     }
 }
 
-fn activity_compact(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Content {
+/// The clock, when it should show next to `a`: beside lasting activities like media, so
+/// the time stays in view; brief ones (an OSD, a new notification) cover it.
+fn clock_beside<'v>(view: &'v View, a: &ActivityView) -> Option<&'v str> {
+    view.clock.as_deref().filter(|_| a.lasting)
+}
+
+fn activity_compact(
+    a: &ActivityView,
+    clock: Option<&str>,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> Content {
     let h = theme.pill_height;
     let icon_size = 16.0;
     let style = TextStyle::new(13.0, Weight::Semibold);
@@ -503,6 +517,13 @@ fn activity_compact(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Con
         items.extend(bar(theme, bar_rect, p));
         natural = bar_rect.right() + PAD + 2.0;
     }
+    if let Some(clock) = clock {
+        let style = TextStyle::new(13.0, Weight::Semibold);
+        let (c, cw, ch) = text(m, clock, style, theme.text_secondary, 120.0, 1);
+        let x = natural - PAD + 14.0;
+        items.push(place(c, x, (h - ch) / 2.0));
+        natural = x + cw + PAD + 2.0;
+    }
     // Keep the content centered when the minimum width kicks in.
     let w = natural.max(theme.center_min_width);
     let shift = (w - natural) / 2.0;
@@ -516,21 +537,48 @@ fn activity_compact(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Con
     }
 }
 
-fn activity_expanded(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Content {
+fn activity_expanded(
+    a: &ActivityView,
+    clock: Option<&str>,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> Content {
     let w = theme.center_expanded_width;
     let inner = w - 2.0 * EXPANDED_PAD;
     let icon_size = 22.0;
     let title_x = EXPANDED_PAD + icon_size + 10.0;
+    let mut items = Vec::new();
+    // The clock in the top right corner, beside the caption (or the title).
+    let mut clock_w = 0.0;
+    if let Some(clock) = clock {
+        let style = TextStyle::new(12.5, Weight::Semibold);
+        let (c, cw, _) = text(m, clock, style, theme.text_secondary, 120.0, 1);
+        items.push(place(c, w - EXPANDED_PAD - cw, EXPANDED_PAD - 2.0));
+        clock_w = cw + 12.0;
+    }
     let title_style = TextStyle::new(15.0, Weight::Semibold);
     let title_w = w - title_x - EXPANDED_PAD;
-    let (t, _, th) = text(m, &a.title, title_style, theme.text, title_w, 1);
+    let has_caption = a.app.as_deref().is_some_and(|s| !s.is_empty());
+    let first_line_w = |full: f32| full - clock_w;
+    let title_max = if has_caption {
+        title_w
+    } else {
+        first_line_w(title_w)
+    };
+    let (t, _, th) = text(m, &a.title, title_style, theme.text, title_max, 1);
 
     // Who it's from, as a small caption above the title.
-    let mut items = Vec::new();
     let mut top = EXPANDED_PAD;
     if let Some(app) = a.app.as_deref().filter(|s| !s.is_empty()) {
         let style = TextStyle::new(11.5, Weight::Semibold);
-        let (c, _, ch) = text(m, app, style, theme.text_secondary, title_w, 1);
+        let (c, _, ch) = text(
+            m,
+            app,
+            style,
+            theme.text_secondary,
+            first_line_w(title_w),
+            1,
+        );
         items.push(place(c, title_x, top - 2.0));
         top += ch;
     }
@@ -581,12 +629,45 @@ fn activity_expanded(a: &ActivityView, theme: &Theme, m: &mut dyn Measure) -> Co
 }
 
 /// The newest item with a `+N` badge, then the tray icons, then the battery.
+/// Icons for what is capturing the user, in their colors: screen red, microphone orange,
+/// camera green.
+fn privacy_icons(view: &View, theme: &Theme) -> Vec<(&'static str, Color)> {
+    let p = view.privacy;
+    [
+        (
+            p.screen,
+            "screen-share",
+            theme.priority_color(Priority::Critical),
+        ),
+        (p.mic, "mic", theme.priority_color(Priority::High)),
+        (p.camera, "camera", theme.charging),
+    ]
+    .into_iter()
+    .filter_map(|(on, icon, color)| on.then_some((icon, color)))
+    .collect()
+}
+
 fn right_compact(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     let h = theme.pill_height;
     let mut items = Vec::new();
     let mut hits = Vec::new();
     let mut x = 10.0;
     let mut end_pad = PAD;
+    // Capture indicators first, where they're easiest to notice.
+    let privacy = privacy_icons(view, theme);
+    for (name, color) in &privacy {
+        let size = 14.0;
+        items.push(Draw::Icon(IconDraw {
+            name: (*name).into(),
+            rect: Rect::new(x, (h - size) / 2.0, size, size),
+            color: *color,
+        }));
+        x += size + 6.0;
+    }
+    if !privacy.is_empty() {
+        x += 4.0;
+    }
+    let after_privacy = x;
     if let Some(right) = &view.right {
         let a = right.newest();
         let icon_size = 14.0;
@@ -646,6 +727,10 @@ fn right_compact(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         items.push(place(t, x + size + 3.0, (h - th) / 2.0));
         x += size + 3.0 + tw;
         end_pad = PAD;
+    }
+    if !privacy.is_empty() && x == after_privacy {
+        // Only the indicators: no gap after the last one.
+        x -= 10.0;
     }
     let key = match &view.right {
         Some(r) => format!("r:{}", r.newest().id),
@@ -1452,6 +1537,7 @@ pub(crate) mod tests {
             app: None,
             actions: Vec::new(),
             priority: Priority::Normal,
+            lasting: false,
         }
     }
 
@@ -1906,6 +1992,78 @@ pub(crate) mod tests {
             short.is_none() || short.as_deref() == Some("76%"),
             "{short:?}"
         );
+    }
+
+    #[test]
+    fn clock_shows_beside_lasting_center_activities() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let has_clock = |c: &Content| {
+            c.items
+                .iter()
+                .any(|d| matches!(d, Draw::Text(t) if t.text == "13:35"))
+        };
+        let brief = view(Some(activity("osd", Some(0.4))), &[]);
+        let media = view(
+            Some(ActivityView {
+                lasting: true,
+                ..activity("media", None)
+            }),
+            &[],
+        );
+        for expanded in [false, true] {
+            assert!(!has_clock(&center_content(
+                &brief, expanded, &theme, &mut m
+            )));
+            assert!(has_clock(&center_content(&media, expanded, &theme, &mut m)));
+        }
+        // The clock makes the pill wider, not the title shorter.
+        let without = ActivityView {
+            lasting: false,
+            ..media.center.clone().unwrap()
+        };
+        let narrow = center_content(&view(Some(without), &[]), false, &theme, &mut m);
+        let wide = center_content(&media, false, &theme, &mut m);
+        assert!(wide.w > narrow.w);
+    }
+
+    #[test]
+    fn privacy_icons_lead_the_right_island() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        assert!(right_content(&v, false, &theme, &mut m).is_none());
+        v.privacy.mic = true;
+        v.privacy.camera = true;
+        let c = right_content(&v, false, &theme, &mut m).expect("shown for the icons alone");
+        let icons: Vec<_> = c
+            .items
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Icon(i) => Some((i.name.as_str(), i.color)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            icons,
+            [
+                ("mic", theme.priority_color(Priority::High)),
+                ("camera", theme.charging)
+            ]
+        );
+        // Ends right after the last icon, like the left padding.
+        assert!(c.w < 10.0 + 2.0 * 14.0 + 6.0 + PAD + 0.5);
+
+        v.right = Some(RightView {
+            items: vec![activity("a", None)],
+            total: 1,
+        });
+        let with_item = right_content(&v, false, &theme, &mut m).unwrap();
+        let first_icon = with_item.items.iter().find_map(|d| match d {
+            Draw::Icon(i) => Some(i.name.clone()),
+            _ => None,
+        });
+        assert_eq!(first_icon.as_deref(), Some("mic"), "before the newest item");
     }
 
     #[test]

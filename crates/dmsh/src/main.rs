@@ -151,6 +151,9 @@ enum Command {
         /// Show a slider open: volume or brightness.
         #[arg(long, value_parser = ["volume", "brightness"])]
         slider: Option<String>,
+        /// Show capture indicators: any of screen, mic, camera (comma-separated).
+        #[arg(long, value_delimiter = ',', value_parser = ["screen", "mic", "camera"])]
+        privacy: Vec<String>,
     },
 }
 
@@ -373,7 +376,16 @@ fn main() -> Result<()> {
             volume,
             brightness,
             slider,
+            privacy,
         } => headless::render(headless::Options {
+            privacy: {
+                let on = |s: &str| privacy.iter().any(|p| p == s);
+                dmsh_core::Privacy {
+                    screen: on("screen"),
+                    mic: on("mic"),
+                    camera: on("camera"),
+                }
+            },
             volume: volume.as_deref().map(parse_level).transpose()?,
             brightness: brightness.as_deref().map(parse_level).transpose()?,
             slider: slider.map(|s| match s.as_str() {

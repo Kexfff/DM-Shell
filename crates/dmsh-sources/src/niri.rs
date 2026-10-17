@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use dmsh_core::{ActivitySpec, Placement, Priority};
+use dmsh_core::Sensor;
 use niri_ipc::{Event as NiriEvent, Request, socket::SOCKET_PATH_ENV};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -11,7 +11,6 @@ use tokio::net::UnixStream;
 use crate::{Emitter, Event};
 
 const LAYOUT_ID: &str = "keyboard-layout";
-const CAST_ID: &str = "screencast";
 
 pub async fn run(emitter: Emitter) -> Result<()> {
     let path = std::env::var_os(SOCKET_PATH_ENV).context("NIRI_SOCKET is not set")?;
@@ -45,6 +44,10 @@ struct State {
     focused_output: Option<String>,
     layouts: Vec<String>,
     active_casts: HashSet<u64>,
+    /// Consumers of the active casts, by stream, when niri knows them.
+    cast_apps: HashMap<u64, String>,
+    /// The screencast indicator is showing.
+    casting: bool,
 }
 
 impl State {
@@ -77,19 +80,14 @@ impl State {
                 }
             }
             NiriEvent::CastsChanged { casts } => {
-                self.active_casts = casts
-                    .iter()
-                    .filter(|c| c.is_active)
-                    .map(|c| c.stream_id)
-                    .collect();
+                self.active_casts.clear();
+                for cast in casts {
+                    self.cast_changed(&cast);
+                }
                 self.update_casts(emitter);
             }
             NiriEvent::CastStartedOrChanged { cast } => {
-                if cast.is_active {
-                    self.active_casts.insert(cast.stream_id);
-                } else {
-                    self.active_casts.remove(&cast.stream_id);
-                }
+                self.cast_changed(&cast);
                 self.update_casts(emitter);
             }
             NiriEvent::CastStopped { stream_id } => {
@@ -107,16 +105,28 @@ impl State {
         }
     }
 
-    fn update_casts(&self, emitter: &Emitter) {
-        if self.active_casts.is_empty() || !emitter.config().sources.screencast {
-            emitter.dismiss(CAST_ID);
+    fn cast_changed(&mut self, cast: &niri_ipc::Cast) {
+        if cast.is_active {
+            self.active_casts.insert(cast.stream_id);
+            if let Some(app) = cast.pid.and_then(crate::camera::process_name) {
+                self.cast_apps.insert(cast.stream_id, app);
+            }
         } else {
-            emitter.push(ActivitySpec {
-                icon: Some("screen-share".into()),
-                placement: Placement::Right,
-                priority: Priority::High,
-                ..ActivitySpec::new(CAST_ID, "Screen is being shared")
-            });
+            self.active_casts.remove(&cast.stream_id);
+        }
+    }
+
+    /// Shows the indicator (announcing it briefly) while any cast is active.
+    fn update_casts(&mut self, emitter: &Emitter) {
+        self.cast_apps
+            .retain(|id, _| self.active_casts.contains(id));
+        let casting = !self.active_casts.is_empty() && emitter.config().sources.screencast;
+        if casting != self.casting {
+            self.casting = casting;
+            let mut apps: Vec<String> = self.cast_apps.values().cloned().collect();
+            apps.sort();
+            apps.dedup();
+            emitter.capture(Sensor::Screen, casting, &apps);
         }
     }
 }

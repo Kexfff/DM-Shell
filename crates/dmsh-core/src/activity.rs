@@ -189,6 +189,10 @@ pub struct ActivityView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
     pub priority: Priority,
+    /// Stays until removed (media, a status) rather than leaving on its own; the center
+    /// shows the clock beside these.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lasting: bool,
 }
 
 impl ActivityView {
@@ -237,6 +241,9 @@ pub struct View {
     /// Quick controls in the expanded right island.
     #[serde(default)]
     pub controls: Controls,
+    /// Screen sharing, microphone and camera in use, shown as icons on the right island.
+    #[serde(default)]
+    pub privacy: Privacy,
     /// First list row shown in the expanded right island (UI state, per output).
     #[serde(skip)]
     pub right_scroll: usize,
@@ -283,6 +290,40 @@ pub struct Controls {
     /// The slider open in place of the volume and brightness buttons.
     #[serde(skip)]
     pub slider: Option<Slider>,
+}
+
+/// What is capturing the user right now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Privacy {
+    #[serde(default)]
+    pub screen: bool,
+    #[serde(default)]
+    pub mic: bool,
+    #[serde(default)]
+    pub camera: bool,
+}
+
+/// One kind of capture in [`Privacy`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Sensor {
+    Screen,
+    Mic,
+    Camera,
+}
+
+impl Privacy {
+    pub fn set(&mut self, sensor: Sensor, on: bool) {
+        match sensor {
+            Sensor::Screen => self.screen = on,
+            Sensor::Mic => self.mic = on,
+            Sensor::Camera => self.camera = on,
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.screen || self.mic || self.camera
+    }
 }
 
 /// A volume or brightness level.
@@ -431,6 +472,7 @@ impl Entry {
             app: self.spec.app.clone(),
             actions: self.spec.actions.clone(),
             priority: self.spec.priority,
+            lasting: !self.is_transient(),
         }
     }
 }
@@ -562,6 +604,7 @@ impl Activities {
             menu: None,
             battery: None,
             controls: Controls::default(),
+            privacy: Privacy::default(),
             right_scroll: 0,
         }
     }
@@ -681,8 +724,10 @@ mod tests {
         let mut a = Activities::default();
         a.push(spec("media", Placement::Center), t0).unwrap();
         a.push(spec("notif", Placement::Flow), t0).unwrap();
-        assert_eq!(a.view_for(t0, true).center.unwrap().id, "notif");
-        assert_eq!(a.view_for(t0, false).center.unwrap().id, "media");
+        let notif = a.view_for(t0, true).center.unwrap();
+        let media = a.view_for(t0, false).center.unwrap();
+        assert_eq!((notif.id.as_str(), notif.lasting), ("notif", false));
+        assert_eq!((media.id.as_str(), media.lasting), ("media", true));
         // The right island is the same everywhere.
         let later = t0 + ms(2000);
         assert_eq!(

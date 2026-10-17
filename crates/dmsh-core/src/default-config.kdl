@@ -57,6 +57,8 @@ sources {
     network true
     keyboard-layout true
     screencast true
+    microphone true
+    camera true
 }
 
 timing {

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use dmsh_core::{
     Activities, ActivitySpec, BatteryView, Control, Controls, Hit, IslandKind, Level,
-    MenuEntryView, MenuView, Placement, Priority, Rect, SessionAction, Slider, Stage, Target,
-    Theme, TrayIconView, View,
+    MenuEntryView, MenuView, Placement, Priority, Privacy, Rect, SessionAction, Slider, Stage,
+    Target, Theme, TrayIconView, View,
     activity::Island,
     config::{Config, ConfigError},
     ipc::{Event, Reply, Request, Response, StateDump},
@@ -117,6 +117,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         dnd: false,
         volume: None,
         brightness: None,
+        privacy: Privacy::default(),
         images: crate::images::ImageResolver::new(),
         qh: qh.clone(),
         registry_state: RegistryState::new(&globals),
@@ -210,6 +211,7 @@ pub struct Shell {
     dnd: bool,
     volume: Option<Level>,
     brightness: Option<Level>,
+    privacy: Privacy,
     images: crate::images::ImageResolver,
     qh: QueueHandle<Shell>,
     output_state: OutputState,
@@ -461,6 +463,7 @@ impl Shell {
                 brightness: self.brightness,
                 ..Controls::default()
             },
+            privacy: self.privacy,
             ..self.activities.view_for(now, focused)
         };
         let views = Views {
@@ -532,6 +535,10 @@ impl Shell {
                     self.volume = Some(level);
                     self.refresh();
                 }
+            }
+            SourceEvent::Privacy(sensor, on) => {
+                self.privacy.set(sensor, on);
+                self.refresh();
             }
             SourceEvent::Brightness(level) => {
                 if !self.dragging(Slider::Brightness) {
