@@ -1056,7 +1056,9 @@ fn tray_icon(item: &TrayIconView, theme: &Theme, slot: Rect, size: f32) -> Draw 
 
 /// An open tray menu: header, optional back row, entries.
 fn menu_list(menu: &MenuView, theme: &Theme, m: &mut dyn Measure) -> Content {
-    let w = 300.0;
+    // As wide as the expanded island it replaces: narrower, the island would shrink out
+    // from under the pointer (on the tray icon) and collapse.
+    let w = theme.right_expanded_width.max(300.0);
     let row = 32.0;
     let label_x = 36.0;
     let label_w = w - label_x - 34.0;
@@ -2133,6 +2135,26 @@ pub(crate) mod tests {
             .filter(|d| matches!(d, Draw::Icon(i) if i.name == "mic"))
             .count();
         assert_eq!(mics, 1);
+    }
+
+    #[test]
+    fn tray_menu_is_as_wide_as_the_expanded_island() {
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        v.menu = Some(MenuView {
+            title: "App".into(),
+            entries: vec![],
+            nested: false,
+            offset: 0,
+        });
+        for width in [340.0, 420.0] {
+            let theme = Theme {
+                right_expanded_width: width,
+                ..Theme::default()
+            };
+            let menu = right_content(&v, true, &theme, &mut m).unwrap();
+            assert_eq!(menu.w, width);
+        }
     }
 
     #[test]
