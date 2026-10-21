@@ -1,7 +1,7 @@
-//! Volume OSD and the volume slider. Listens to `pactl subscribe` (works on PipeWire via
-//! pipewire-pulse) and reads the default sink with `wpctl` only when a sink or the server
-//! changed, so nothing runs while the volume is untouched. Changes from the slider are
-//! set with `wpctl` too.
+//! Volume OSDs and the volume and microphone sliders. Listens to `pactl subscribe` (works
+//! on PipeWire via pipewire-pulse) and reads the default output or input with `wpctl`
+//! only when a sink, a source or the server changed, so nothing runs while the volume is
+//! untouched. Changes from the sliders are set with `wpctl` too.
 
 use std::process::Stdio;
 use std::time::Instant;
@@ -14,17 +14,57 @@ use tokio::sync::mpsc;
 
 use crate::{Emitter, Event, QUIET_AFTER_SET, Retry, SETTLE};
 
+/// The default output (speakers, headphones) or input (microphone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Device {
+    Output,
+    Input,
+}
+
+impl Device {
+    const ALL: [Device; 2] = [Device::Output, Device::Input];
+
+    fn target(self) -> &'static str {
+        match self {
+            Device::Output => "@DEFAULT_AUDIO_SINK@",
+            Device::Input => "@DEFAULT_AUDIO_SOURCE@",
+        }
+    }
+
+    /// The `pactl subscribe` events about this kind of device.
+    fn event(self) -> &'static str {
+        match self {
+            Device::Output => " on sink #",
+            Device::Input => " on source #",
+        }
+    }
+
+    fn emit(self, emitter: &Emitter, volume: Option<Volume>) {
+        let level = volume.map(Volume::level);
+        emitter.emit(match self {
+            Device::Output => Event::Volume(level),
+            Device::Input => Event::Mic(level),
+        });
+    }
+
+    fn osd(self, emitter: &Emitter, v: Volume) {
+        let (id, icon, title) = match (self, v.muted) {
+            (Device::Output, false) => ("volume", "volume", "Volume"),
+            (Device::Output, true) => ("volume", "volume-mute", "Muted"),
+            (Device::Input, false) => ("mic-volume", "mic", "Microphone"),
+            (Device::Input, true) => ("mic-volume", "mic-off", "Microphone muted"),
+        };
+        emitter.push(emitter.osd(id, icon, title, Some(v.percent as f32 / 100.0)));
+    }
+}
+
 /// Changes asked for by the islands.
 #[derive(Debug)]
 pub enum SetVolume {
     /// 0.0 to 1.0; also unmutes.
-    Level(f32),
-    ToggleMute,
+    Level(Device, f32),
+    ToggleMute(Device),
 }
-
-const SINK: &str = "@DEFAULT_AUDIO_SINK@";
-
-const ID: &str = "volume";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Volume {
@@ -55,14 +95,20 @@ pub(crate) async fn run(
     }
 }
 
-/// Follows the volume until the audio server goes away.
+/// Follows the output and input volume until the audio server goes away.
 async fn watch(emitter: &Emitter, commands: &mut mpsc::UnboundedReceiver<SetVolume>) -> Result<()> {
     // Requests made while the server was away are stale now.
     while commands.try_recv().is_ok() {}
-    let mut last = read().await?;
-    emitter.emit(Event::Volume(last.level()));
-    // Changes made from the slider don't need an OSD on top of it.
-    let mut quiet_until = Instant::now();
+    // An output is required; a machine without a microphone just has no input.
+    let mut last = [
+        Some(read(Device::Output).await?),
+        read(Device::Input).await.ok(),
+    ];
+    for (device, volume) in Device::ALL.into_iter().zip(last) {
+        device.emit(emitter, volume);
+    }
+    // Changes made from the sliders don't need an OSD on top of them.
+    let mut quiet_until = [Instant::now(); 2];
     let mut child = Command::new("pactl")
         .arg("subscribe")
         .stdout(Stdio::piped())
@@ -79,49 +125,68 @@ async fn watch(emitter: &Emitter, commands: &mut mpsc::UnboundedReceiver<SetVolu
                 None => break,
             },
             Some(command) = commands.recv() => {
-                // A slider drag sends many; only the newest level matters.
-                let (mut level, mut toggle) = (None, false);
+                // A slider drag sends many; only the newest level per device matters.
+                let mut wanted: [(Option<f32>, bool); 2] = [(None, false); 2];
                 let mut next = Some(command);
                 while let Some(command) = next {
                     match command {
-                        SetVolume::Level(v) => level = Some(v),
-                        SetVolume::ToggleMute => toggle = !toggle,
+                        SetVolume::Level(d, v) => wanted[d as usize].0 = Some(v),
+                        SetVolume::ToggleMute(d) => wanted[d as usize].1 ^= true,
                     }
                     next = commands.try_recv().ok();
                 }
-                if let Err(e) = set(level, toggle, last.muted).await {
-                    log::warn!("setting volume: {e:#}");
+                for device in Device::ALL {
+                    let (level, toggle) = wanted[device as usize];
+                    if level.is_none() && !toggle {
+                        continue;
+                    }
+                    let muted = last[device as usize].is_some_and(|v| v.muted);
+                    if let Err(e) = set(device, level, toggle, muted).await {
+                        log::warn!("setting {device:?} volume: {e:#}");
+                    }
+                    quiet_until[device as usize] = Instant::now() + QUIET_AFTER_SET;
                 }
-                quiet_until = Instant::now() + QUIET_AFTER_SET;
                 continue;
             }
         };
-        // "Event 'change' on sink #56" or "... on server" (default sink changed).
-        if !(line.contains(" on sink #") || line.contains(" on server")) {
-            continue;
+        // "Event 'change' on sink #56", "... on source #60", or "... on server" (a
+        // default device changed). Coalesce a burst (a held volume key) into one read.
+        let mut changed = [false; 2];
+        let mut note = |line: &str| {
+            for device in Device::ALL {
+                if line.contains(device.event()) || line.contains(" on server") {
+                    changed[device as usize] = true;
+                }
+            }
+        };
+        note(&line);
+        while let Ok(Ok(Some(line))) = tokio::time::timeout(SETTLE, lines.next_line()).await {
+            note(&line);
         }
-        // Coalesce a burst (a held volume key) into one read.
-        while let Ok(Ok(Some(_))) = tokio::time::timeout(SETTLE, lines.next_line()).await {}
-
-        let now = match read().await {
-            Ok(v) => v,
-            Err(e) => {
-                log::debug!("reading volume: {e:#}");
-                continue;
-            }
-        };
-        if now != last {
-            last = now;
-            emitter.emit(Event::Volume(now.level()));
-            if Instant::now() < quiet_until {
-                continue;
-            }
-            let (icon, title) = if now.muted {
-                ("volume-mute", "Muted")
-            } else {
-                ("volume", "Volume")
+        for device in Device::ALL.into_iter().filter(|d| changed[*d as usize]) {
+            let now = match read(device).await {
+                Ok(v) => Some(v),
+                // The microphone was unplugged; the output stays (it may be switching).
+                Err(_) if device == Device::Input => None,
+                Err(e) => {
+                    log::debug!("reading volume: {e:#}");
+                    continue;
+                }
             };
-            emitter.push(emitter.osd(ID, icon, title, Some(now.percent as f32 / 100.0)));
+            let slot = &mut last[device as usize];
+            if now == *slot {
+                continue;
+            }
+            // Only a change of the same device is worth an OSD, not one appearing.
+            let was_there = slot.is_some();
+            *slot = now;
+            device.emit(emitter, now);
+            if let Some(v) = now
+                && was_there
+                && Instant::now() >= quiet_until[device as usize]
+            {
+                device.osd(emitter, v);
+            }
         }
     }
     anyhow::bail!("`pactl subscribe` exited")
@@ -141,24 +206,25 @@ async fn wpctl(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-async fn set(level: Option<f32>, toggle_mute: bool, muted: bool) -> Result<()> {
+async fn set(device: Device, level: Option<f32>, toggle_mute: bool, muted: bool) -> Result<()> {
+    let target = device.target();
     if let Some(v) = level {
         let v = format!("{:.3}", v.clamp(0.0, 1.0));
-        wpctl(&["set-volume", SINK, &v]).await?;
-        // Turning the volume up while muted means "I want to hear it".
+        wpctl(&["set-volume", target, &v]).await?;
+        // Turning it up while muted means "I want it on".
         if muted && !toggle_mute {
-            wpctl(&["set-mute", SINK, "0"]).await?;
+            wpctl(&["set-mute", target, "0"]).await?;
         }
     }
     if toggle_mute {
-        wpctl(&["set-mute", SINK, "toggle"]).await?;
+        wpctl(&["set-mute", target, "toggle"]).await?;
     }
     Ok(())
 }
 
-async fn read() -> Result<Volume> {
+async fn read(device: Device) -> Result<Volume> {
     let out = Command::new("wpctl")
-        .args(["get-volume", SINK])
+        .args(["get-volume", device.target()])
         .output()
         .await
         .context("running wpctl")?;
@@ -238,7 +304,7 @@ mod tests {
         let sink = events.clone();
         let emitter = Emitter {
             emit: Arc::new(move |e| {
-                if let Event::Volume(level) = e {
+                if let Event::Volume(Some(level)) = e {
                     sink.lock().unwrap().push(level);
                 }
             }),

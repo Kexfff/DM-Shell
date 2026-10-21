@@ -117,6 +117,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         dnd: false,
         volume: None,
         brightness: None,
+        mic: None,
         privacy: Privacy::default(),
         images: crate::images::ImageResolver::new(),
         qh: qh.clone(),
@@ -211,6 +212,7 @@ pub struct Shell {
     dnd: bool,
     volume: Option<Level>,
     brightness: Option<Level>,
+    mic: Option<Level>,
     privacy: Privacy,
     images: crate::images::ImageResolver,
     qh: QueueHandle<Shell>,
@@ -337,13 +339,13 @@ struct OutputSurface {
     scroll_accum: f64,
     /// The session menu, open in the expanded right island.
     session: SessionMenu,
-    /// The volume or brightness slider open in the expanded right island.
+    /// The volume, microphone or brightness slider open in the expanded right island.
     slider: Option<Slider>,
     /// A slider being dragged, and its track in surface coordinates.
     drag: Option<(Slider, Rect)>,
-    /// The volume button is pressed: a short press opens the slider, a long one mutes.
-    /// Holds the mute timer, `None` once it fired.
-    volume_press: Option<Option<RegistrationToken>>,
+    /// The volume or microphone button is pressed: a short press opens its slider, a
+    /// long one mutes. Holds the mute timer, `None` once it fired.
+    level_press: Option<(Slider, Option<RegistrationToken>)>,
     /// A frame callback is outstanding; the next draw happens when it fires.
     frame_pending: bool,
     /// Timestamp of the last animation frame, for frame-rate independent springs.
@@ -460,6 +462,7 @@ impl Shell {
                 keep_awake: self.keep_awake.is_some(),
                 dnd: self.dnd,
                 volume: self.volume,
+                mic: self.mic,
                 brightness: self.brightness,
                 ..Controls::default()
             },
@@ -532,7 +535,13 @@ impl Shell {
             // catches up (and may lag a few steps behind).
             SourceEvent::Volume(level) => {
                 if !self.dragging(Slider::Volume) {
-                    self.volume = Some(level);
+                    self.volume = level;
+                    self.refresh();
+                }
+            }
+            SourceEvent::Mic(level) => {
+                if !self.dragging(Slider::Mic) {
+                    self.mic = level;
                     self.refresh();
                 }
             }
@@ -1024,8 +1033,8 @@ impl Shell {
                 self.start_hold(index, action);
                 return;
             }
-            Target::Level(Slider::Volume) => {
-                self.press_volume(index);
+            Target::Level(slider @ (Slider::Volume | Slider::Mic)) => {
+                self.press_level(index, slider);
                 return;
             }
             Target::Level(slider) => {
@@ -1092,49 +1101,51 @@ impl Shell {
         }
     }
 
-    /// The volume button went down: mute if it's still held after a moment.
-    fn press_volume(&mut self, index: usize) {
-        self.cancel_volume_press(index);
+    /// The volume or microphone button went down: mute if it's still held after a moment.
+    fn press_level(&mut self, index: usize, slider: Slider) {
+        self.cancel_level_press(index);
         let timer = Timer::from_duration(MUTE_HOLD);
-        let token = self.loop_handle.insert_source(timer, |_, _, shell| {
+        let token = self.loop_handle.insert_source(timer, move |_, _, shell| {
             for island in &mut shell.islands {
-                if let Some(timer @ Some(_)) = &mut island.volume_press {
+                if let Some((_, timer @ Some(_))) = &mut island.level_press {
                     *timer = None;
                 }
             }
-            shell.toggle_mute();
+            shell.toggle_mute(slider);
             TimeoutAction::Drop
         });
-        self.islands[index].volume_press = Some(token.ok());
+        self.islands[index].level_press = Some((slider, token.ok()));
     }
 
-    fn cancel_volume_press(&mut self, index: usize) {
-        if let Some(Some(token)) = self.islands[index].volume_press.take() {
+    fn cancel_level_press(&mut self, index: usize) {
+        if let Some((_, Some(token))) = self.islands[index].level_press.take() {
             self.loop_handle.remove(token);
         }
     }
 
-    /// The mouse button or Enter came up: finishes a press on the volume button (a short
-    /// one opens the slider), a drag, or cancels a session hold.
+    /// The mouse button or Enter came up: finishes a press on the volume or microphone
+    /// button (a short one opens the slider), a drag, or cancels a session hold.
     fn release(&mut self, index: usize) {
         self.cancel_hold(index);
         self.islands[index].drag = None;
         // A short press opens the slider; after a long one (it muted) nothing more happens.
-        if let Some(Some(token)) = self.islands[index].volume_press.take() {
+        if let Some((slider, Some(token))) = self.islands[index].level_press.take() {
             self.loop_handle.remove(token);
-            self.open_slider(index, Some(Slider::Volume));
+            self.open_slider(index, Some(slider));
         }
     }
 
-    fn toggle_mute(&mut self) {
-        let Some(volume) = &mut self.volume else {
-            return;
+    fn toggle_mute(&mut self, slider: Slider) {
+        use dmsh_sources::volume::{Device, SetVolume};
+        let (level, device) = match slider {
+            Slider::Volume => (&mut self.volume, Device::Output),
+            Slider::Mic => (&mut self.mic, Device::Input),
+            Slider::Brightness => return,
         };
-        volume.muted = !volume.muted;
+        let Some(level) = level else { return };
+        level.muted = !level.muted;
         if let Some(sources) = &self.sources {
-            sources.send(SourceCommand::SetVolume(
-                dmsh_sources::volume::SetVolume::ToggleMute,
-            ));
+            sources.send(SourceCommand::SetVolume(SetVolume::ToggleMute(device)));
         }
         self.refresh();
     }
@@ -1142,10 +1153,15 @@ impl Shell {
     /// Sets a level right away in the islands and asks the system for it.
     fn set_level(&mut self, slider: Slider, value: f32) {
         let value = value.clamp(0.0, 1.0);
+        use dmsh_sources::volume::{Device, SetVolume};
         let (level, command) = match slider {
             Slider::Volume => (
                 &mut self.volume,
-                SourceCommand::SetVolume(dmsh_sources::volume::SetVolume::Level(value)),
+                SourceCommand::SetVolume(SetVolume::Level(Device::Output, value)),
+            ),
+            Slider::Mic => (
+                &mut self.mic,
+                SourceCommand::SetVolume(SetVolume::Level(Device::Input, value)),
             ),
             Slider::Brightness => (&mut self.brightness, SourceCommand::SetBrightness(value)),
         };
@@ -1167,6 +1183,7 @@ impl Shell {
     fn step_level(&mut self, slider: Slider, delta: f32) {
         let current = match slider {
             Slider::Volume => self.volume,
+            Slider::Mic => self.mic,
             Slider::Brightness => self.brightness,
         };
         if let Some(level) = current {
@@ -1378,7 +1395,7 @@ impl Shell {
             session: SessionMenu::default(),
             slider: None,
             drag: None,
-            volume_press: None,
+            level_press: None,
             frame_pending: false,
             last_frame_ms: None,
         });
@@ -1786,11 +1803,10 @@ impl PointerHandler for Shell {
                     if let Some((slider, track)) = self.islands[index].drag {
                         self.set_level(slider, dmsh_core::slider_value(track, x));
                     }
-                    if self.islands[index].volume_press.is_some()
-                        && self.islands[index].stage.target_at(x, y)
-                            != Some(Target::Level(Slider::Volume))
+                    if let Some((slider, _)) = self.islands[index].level_press
+                        && self.islands[index].stage.target_at(x, y) != Some(Target::Level(slider))
                     {
-                        self.cancel_volume_press(index);
+                        self.cancel_level_press(index);
                     }
                     // Sliding off the held option cancels it.
                     if let Some((action, _)) = self.islands[index].session.hold
@@ -1808,7 +1824,7 @@ impl PointerHandler for Shell {
                         self.close_menu();
                     }
                     self.cancel_hold(index);
-                    self.cancel_volume_press(index);
+                    self.cancel_level_press(index);
                     self.islands[index].drag = None;
                     self.set_pointer(index, None);
                     self.set_hover(index, None);

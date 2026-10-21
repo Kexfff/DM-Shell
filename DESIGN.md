@@ -40,10 +40,10 @@ Both are solid black, Apple-style pills (the first and default theme).
   protocol), a power button for the **session menu** (Shut down, Reboot, Log out —
   each runs only when held until it fills, ~0.8 s, mouse or Enter; commands
   configurable), tray icons, battery (its label shortens to the percent, then to the
-  icon, when the row is full). **Volume and brightness** are round buttons among the
-  quick controls; clicking one swaps the row for a slider (drag, wheel, or ← → in 5%
-  steps), and holding the volume button (~0.45 s) toggles mute instead.
-  Volume is set with `wpctl`, brightness through logind's `SetBrightness` (no extra
+  icon, when the row is full). **Volume, microphone and brightness** are round buttons
+  among the quick controls; clicking one swaps the row for a slider (drag, wheel, or
+  ← → in 5% steps), and holding the volume or microphone button (~0.45 s) toggles mute
+  instead. Volume and microphone (the default sink and source) are set with `wpctl`, brightness through logind's `SetBrightness` (no extra
   permissions, never below 1 so the panel doesn't go dark); changes made from the
   slider don't also raise the center OSD. Then the list. Dark monochrome tray icons (from icon
   themes made for light panels) are tinted light so they show on the black pill.
@@ -131,7 +131,7 @@ the rest keep running. Nothing polls: every source is event-driven.
 | microphone | `pactl subscribe`, then `pactl -f json list source-outputs` on stream/source events | microphone indicator while something records from a real source (not a monitor, not pavucontrol's meters, not paused) |
 | camera | inotify (open/close) on `/dev/video*` and new ones in `/dev`, settled 1 s, then a `/proc/*/fd` scan | camera indicator while a process has a camera open |
 | clock | one wakeup per minute boundary | idle center text (`view.clock`) |
-| volume | `pactl subscribe`, then `wpctl get-volume` only on sink/server events | center OSD, 1.5 s |
+| volume | `pactl subscribe`, then `wpctl get-volume` on the default sink/source only on sink/source/server events; retried while the audio server is down | center OSD, 1.5 s (volume, microphone) |
 
 Capture indicators (screen red, microphone orange, camera green) sit first in the
 compact right island for as long as the capture lasts; when one starts (or another app

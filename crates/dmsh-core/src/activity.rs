@@ -284,6 +284,9 @@ pub struct Controls {
     /// Output volume of the default audio sink; `None` without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<Level>,
+    /// Input volume of the default microphone; `None` without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic: Option<Level>,
     /// Display backlight; `None` without a backlight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<Level>,
@@ -340,6 +343,7 @@ pub struct Level {
 #[serde(rename_all = "kebab-case")]
 pub enum Slider {
     Volume,
+    Mic,
     Brightness,
 }
 

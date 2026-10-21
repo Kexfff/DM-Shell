@@ -138,8 +138,9 @@ an extra `at_ms` field delays an entry:
 | `--wifi on\|off` | — | Show the Wi-Fi quick control. |
 | `--dnd` | off | Render with do not disturb on. |
 | `--volume 45` / `45:muted` | — | Show the volume button at this level. |
+| `--mic 60` / `60:muted` | — | Show the microphone button at this level. |
 | `--brightness 70` | — | Show the brightness button at this level. |
-| `--slider volume\|brightness` | closed | Show that slider open in place of the buttons. |
+| `--slider volume\|mic\|brightness` | closed | Show that slider open in place of the buttons. |
 | `--privacy screen,mic,camera` | none | Show capture indicators. |
 | `--session [ACTION:PROGRESS]` | closed | Show the session menu open, e.g. `--session reboot:0.6` with Reboot held 60% of the way. |
 | `--width`, `--scale` | `1645`, `1.75` | Logical output width and scale. |

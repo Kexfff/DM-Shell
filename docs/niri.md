@@ -50,9 +50,9 @@ Activating something that hands focus to an app — opening a notification, a tr
 a menu entry, a center button — closes the island, so the app gets the keyboard.
 Toggles, dismissals and "Clear all" keep it open.
 
-With a volume or brightness slider selected, ← → (`h` `l`) move it by 5% instead of
-the selection; ↑ ↓ and Tab still move the selection. Enter on the volume button opens
-its slider when released quickly and mutes when held.
+With a volume, microphone or brightness slider selected, ← → (`h` `l`) move it by 5%
+instead of the selection; ↑ ↓ and Tab still move the selection. Enter on the volume or
+microphone button opens its slider when released quickly and mutes when held.
 
 Session menu options (behind the power button) run only while Enter is **held** until
 the option fills up; a quick press does nothing.

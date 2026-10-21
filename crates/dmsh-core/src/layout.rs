@@ -915,6 +915,8 @@ fn level_icon(slider: Slider, level: Level) -> &'static str {
     match slider {
         Slider::Volume if level.muted || level.value <= 0.0 => "volume-mute",
         Slider::Volume => "volume",
+        Slider::Mic if level.muted || level.value <= 0.0 => "mic-off",
+        Slider::Mic => "mic",
         Slider::Brightness => "brightness",
     }
 }
@@ -940,16 +942,26 @@ fn slider_row(
         draws,
         hits,
     );
-    let label_w = 44.0;
+    // The level as text on the right; the track gets the rest.
+    let muted = slider != Slider::Brightness && level.muted;
+    let label = if muted {
+        "Muted".to_owned()
+    } else {
+        format!("{}%", (level.value * 100.0).round() as i32)
+    };
+    let style = TextStyle::new(12.5, Weight::Semibold);
+    let (t, tw, th) = text(m, &label, style, theme.text, 80.0, 1);
+    draws.push(place(t, w - pad - tw, y + (size - th) / 2.0));
+    // Room for "100%" at least, so the track doesn't jump as the level changes.
+    let label_w = tw.max(text(m, "100%", style, theme.text, 80.0, 1).1);
     let track = Rect::new(
         back.right() + gap,
         y,
-        w - pad - label_w - back.right() - gap,
+        w - pad - label_w - 10.0 - back.right() - gap,
         size,
     );
     draws.push(Draw::Rect(RoundRect::pill(track, theme.button)));
     // The fill starts as a circle around the icon and grows to the full track.
-    let muted = slider == Slider::Volume && level.muted;
     let fill_color = if muted {
         theme.text_secondary
     } else {
@@ -969,14 +981,6 @@ fn slider_row(
         ),
         color: theme.pill_color,
     }));
-    let label = if muted {
-        "Muted".to_owned()
-    } else {
-        format!("{}%", (level.value * 100.0).round() as i32)
-    };
-    let style = TextStyle::new(12.5, Weight::Semibold);
-    let (t, tw, th) = text(m, &label, style, theme.text, label_w + 6.0, 1);
-    draws.push(place(t, w - pad - tw, y + (size - th) / 2.0));
     hits.push(Hit {
         rect: track,
         target: Target::Slider(slider),
@@ -1016,6 +1020,7 @@ fn controls_row(
     // Volume and brightness open a slider in place of this row.
     let levels = [
         (Slider::Volume, controls.volume),
+        (Slider::Mic, controls.mic),
         (Slider::Brightness, controls.brightness),
     ];
     for (slider, level) in levels {
@@ -1196,6 +1201,7 @@ fn right_list(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
     let c = &view.controls;
     let slider = c.slider.and_then(|s| match s {
         Slider::Volume => c.volume.map(|l| (s, l)),
+        Slider::Mic => c.mic.map(|l| (s, l)),
         Slider::Brightness => c.brightness.map(|l| (s, l)),
     });
     let taken = c.session_open || slider.is_some();
@@ -1966,6 +1972,44 @@ pub(crate) mod tests {
         v.controls.brightness = None;
         let gone = right_content(&v, true, &theme, &mut m).unwrap();
         assert_eq!(targets(&gone), [Target::Level(Slider::Volume)]);
+
+        // The microphone sits between volume and brightness, crossed out when muted.
+        v.controls.slider = None;
+        v.controls.brightness = Some(Level {
+            value: 0.7,
+            muted: false,
+        });
+        v.controls.mic = Some(Level {
+            value: 0.6,
+            muted: true,
+        });
+        let with_mic = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(
+            targets(&with_mic),
+            [
+                Target::Level(Slider::Volume),
+                Target::Level(Slider::Mic),
+                Target::Level(Slider::Brightness)
+            ]
+        );
+        assert!(icons(&with_mic).contains(&"mic-off".to_owned()));
+        v.controls.slider = Some(Slider::Mic);
+        let mic_slider = right_content(&v, true, &theme, &mut m).unwrap();
+        assert_eq!(
+            targets(&mic_slider),
+            [Target::CloseSlider, Target::Slider(Slider::Mic)]
+        );
+        // The label never runs into the track.
+        let track = mic_slider.hits[1].rect;
+        let label_x = mic_slider
+            .items
+            .iter()
+            .find_map(|d| match d {
+                Draw::Text(t) if t.text == "Muted" => Some(t.rect.x),
+                _ => None,
+            })
+            .unwrap();
+        assert!(label_x >= track.right() + 8.0);
     }
 
     #[test]

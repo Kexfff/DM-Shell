@@ -135,7 +135,7 @@ Turns event sources on or off; all are on by default. A bare name means `true`
 | `notifications` | Run the notification daemon. Turn off to keep another one (mako, swaync). |
 | `tray` | System tray icons and menus on the right island. |
 | `media` | What's playing (MPRIS) and media controls. |
-| `volume` | Volume OSD, and the volume button and slider. Needs `pactl` and `wpctl`. |
+| `volume` | Volume and microphone OSDs, buttons and sliders. Needs `pactl` and `wpctl`. |
 | `brightness` | Brightness OSD, and the brightness button and slider (when there is a backlight). |
 | `power` | Battery indicator, charger messages, low and critical warnings. |
 | `network` | Wi-Fi connect/disconnect messages and the Wi-Fi toggle. |

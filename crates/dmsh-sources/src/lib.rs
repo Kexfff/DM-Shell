@@ -46,8 +46,10 @@ pub enum Event {
     Battery(dmsh_core::BatteryView),
     /// Wi-Fi radio on/off; sent only when there is a Wi-Fi device.
     Wifi(bool),
-    /// The default audio sink's volume, at startup and whenever it changes.
-    Volume(dmsh_core::Level),
+    /// The default audio output's volume, at startup and whenever it changes.
+    Volume(Option<dmsh_core::Level>),
+    /// The default audio input's (microphone's) volume; `None` without one.
+    Mic(Option<dmsh_core::Level>),
     /// The backlight level, at startup and whenever it changes.
     Brightness(dmsh_core::Level),
     /// The screen, a microphone or a camera started or stopped being captured.

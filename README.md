@@ -32,8 +32,8 @@ AI agents can put things on the islands and wait for answers.
 - **Battery** always on the right island; a critical battery also takes the center.
 - **Quick controls**: Wi-Fi on/off, do not disturb (notifications skip the center unless
   critical) and "Keep awake".
-- **Volume and brightness**: quick-control buttons that open a slider (drag, scroll or
-  arrow keys); hold the volume one to mute.
+- **Volume, microphone and brightness**: quick-control buttons that open a slider
+  (drag, scroll or arrow keys); hold volume or microphone to mute.
 - **Session menu**: the power button opens Shut down · Reboot · Log out; hold one until
   it fills to run it, so a stray click never logs you out.
 - **Privacy indicators**: screen sharing, microphone and camera each show an icon while
@@ -49,7 +49,7 @@ AI agents can put things on the islands and wait for answers.
 
 | Expanded right island | An agent asking | Media | Idle, expanded |
 |---|---|---|---|
-| ![Right island expanded: quick controls, battery, volume and brightness, notification list](docs/images/right-expanded.png) | ![Center island asking for permission with Allow and Deny](docs/images/question.png) | ![Media controls](docs/images/media.png) | ![Clock and date](docs/images/clock.png) |
+| ![Right island expanded: quick controls with volume, microphone and brightness, battery, notification list](docs/images/right-expanded.png) | ![Center island asking for permission with Allow and Deny](docs/images/question.png) | ![Media controls](docs/images/media.png) | ![Clock and date](docs/images/clock.png) |
 
 ## Scope
 

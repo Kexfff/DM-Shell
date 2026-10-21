@@ -145,11 +145,14 @@ enum Command {
         /// Show the volume button at this percent (`45:muted` for muted).
         #[arg(long)]
         volume: Option<String>,
+        /// Show the microphone button at this percent (`60:muted` for muted).
+        #[arg(long)]
+        mic: Option<String>,
         /// Show the brightness button at this percent.
         #[arg(long)]
         brightness: Option<String>,
-        /// Show a slider open: volume or brightness.
-        #[arg(long, value_parser = ["volume", "brightness"])]
+        /// Show a slider open: volume, mic or brightness.
+        #[arg(long, value_parser = ["volume", "mic", "brightness"])]
         slider: Option<String>,
         /// Show capture indicators: any of screen, mic, camera (comma-separated).
         #[arg(long, value_delimiter = ',', value_parser = ["screen", "mic", "camera"])]
@@ -374,6 +377,7 @@ fn main() -> Result<()> {
             dnd,
             session,
             volume,
+            mic,
             brightness,
             slider,
             privacy,
@@ -387,9 +391,11 @@ fn main() -> Result<()> {
                 }
             },
             volume: volume.as_deref().map(parse_level).transpose()?,
+            mic: mic.as_deref().map(parse_level).transpose()?,
             brightness: brightness.as_deref().map(parse_level).transpose()?,
             slider: slider.map(|s| match s.as_str() {
                 "volume" => Slider::Volume,
+                "mic" => Slider::Mic,
                 _ => Slider::Brightness,
             }),
             session: session
