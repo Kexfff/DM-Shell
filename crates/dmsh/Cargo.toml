@@ -16,4 +16,5 @@ log = "0.4.34"
 serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 smithay-client-toolkit = "0.21.1"
+toml_edit = "0.25.17"
 wayland-protocols = { version = "0.32.13", features = ["staging", "unstable", "client"] }

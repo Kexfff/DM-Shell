@@ -297,7 +297,119 @@ pub fn apply(settings: &Path, exe: &Path, remove: bool) -> Result<()> {
 }
 
 pub fn claude_settings_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude").join("settings.json"))
+    home().map(|h| h.join(".claude").join("settings.json"))
+}
+
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Where Claude Code keeps user-scope MCP servers (what `claude mcp add --scope user`
+/// writes), so the desktop app's Claude Code works without the `claude` CLI installed.
+pub fn claude_json_path() -> Option<PathBuf> {
+    home().map(|h| h.join(".claude.json"))
+}
+
+/// Codex's config: `$CODEX_HOME/config.toml`, by default `~/.codex/config.toml`.
+pub fn codex_config_path() -> Option<PathBuf> {
+    let dir = match std::env::var_os("CODEX_HOME") {
+        Some(dir) => PathBuf::from(dir),
+        None => home()?.join(".codex"),
+    };
+    Some(dir.join("config.toml"))
+}
+
+/// Replaces a file through a temporary one beside it, keeping its permissions (new files
+/// are private: these configs hold tokens), so an app reading it never sees half a file.
+fn write_atomically(path: &Path, contents: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".dmsh-tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
+    let permissions = std::fs::metadata(path)
+        .map(|m| m.permissions())
+        .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o600));
+    std::fs::set_permissions(&tmp, permissions)?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+}
+
+/// Adds (or removes) the dmsh MCP server in Claude Code's `~/.claude.json`, the same
+/// entry `claude mcp add --transport stdio dmsh --scope user -- <exe> mcp` makes.
+pub fn apply_claude_mcp(claude_json: &Path, exe: &Path, remove: bool) -> Result<()> {
+    let mut root: Value = match std::fs::read_to_string(claude_json) {
+        Ok(text) => serde_json::from_str(&text)
+            .with_context(|| format!("{} isn't valid JSON", claude_json.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e).context(format!("reading {}", claude_json.display())),
+    };
+    let object = root
+        .as_object_mut()
+        .with_context(|| format!("{} must be a JSON object", claude_json.display()))?;
+    let servers = object
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .context("\"mcpServers\" must be an object")?;
+    if remove {
+        servers.remove("dmsh");
+    } else {
+        servers.insert(
+            "dmsh".into(),
+            json!({
+                "type": "stdio",
+                "command": exe.display().to_string(),
+                "args": ["mcp"],
+                "env": {},
+            }),
+        );
+    }
+    write_atomically(claude_json, &(serde_json::to_string_pretty(&root)? + "\n"))
+}
+
+/// Adds (or removes) `[mcp_servers.dmsh]` in Codex's config.toml, keeping the rest of
+/// the file (comments and formatting included) as it was.
+pub fn apply_codex(config: &Path, exe: &Path, remove: bool) -> Result<()> {
+    let text = match std::fs::read_to_string(config) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).context(format!("reading {}", config.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} isn't valid TOML", config.display()))?;
+    if remove {
+        if let Some(servers) = doc
+            .get_mut("mcp_servers")
+            .and_then(|s| s.as_table_like_mut())
+        {
+            servers.remove("dmsh");
+            if servers.is_empty() {
+                doc.remove("mcp_servers");
+            }
+        }
+    } else {
+        let servers = doc
+            .entry("mcp_servers")
+            .or_insert_with(|| {
+                let mut table = toml_edit::Table::new();
+                // Only `[mcp_servers.<name>]` headers, no empty `[mcp_servers]`.
+                table.set_implicit(true);
+                toml_edit::Item::Table(table)
+            })
+            .as_table_mut()
+            .context("`mcp_servers` must be a table")?;
+        let mut dmsh = toml_edit::Table::new();
+        dmsh["command"] = toml_edit::value(exe.display().to_string());
+        let mut args = toml_edit::Array::new();
+        args.push("mcp");
+        dmsh["args"] = toml_edit::value(args);
+        servers.insert("dmsh", toml_edit::Item::Table(dmsh));
+    }
+    write_atomically(config, &doc.to_string())
 }
 
 /// Printed by `dmsh claude-code`.
@@ -321,10 +433,34 @@ Merge this into ~/.claude/settings.json (or run `dmsh claude-code --apply`):
 
 ## MCP server: tools for showing status, notifying and asking you
 
+`dmsh claude-code --apply` registers it too (in ~/.claude.json, user scope). With the
+`claude` CLI installed, this does the same:
+
 claude mcp add --transport stdio dmsh --scope user -- '{exe}' mcp
 "#,
         exe = exe.display()
     ))
+}
+
+/// Printed by `dmsh codex`.
+pub fn codex_setup_text(exe: &Path) -> String {
+    format!(
+        r#"# dmsh × Codex
+
+## MCP server: tools for showing status, notifying and asking you
+
+Add this to ~/.codex/config.toml (or run `dmsh codex --apply`):
+
+[mcp_servers.dmsh]
+command = "{exe}"
+args = ["mcp"]
+
+With the `codex` CLI installed, this does the same:
+
+codex mcp add dmsh -- '{exe}' mcp
+"#,
+        exe = exe.display()
+    )
 }
 
 #[cfg(test)]
@@ -371,6 +507,74 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(removed, original);
         assert!(dir.join("settings.json.dmsh-backup").exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn claude_mcp_entry_matches_the_cli_and_keeps_the_rest() {
+        let dir = std::env::temp_dir().join(format!("dmsh-claude-json-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".claude.json");
+        let original = json!({
+            "userID": "abc",
+            "mcpServers": { "other": { "type": "stdio", "command": "x", "args": [], "env": {} } },
+            "projects": {}
+        });
+        std::fs::write(&path, original.to_string()).unwrap();
+        apply_claude_mcp(&path, &exe(), false).unwrap();
+        let added: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // What `claude mcp add --transport stdio dmsh --scope user -- … mcp` writes.
+        assert_eq!(
+            added["mcpServers"]["dmsh"],
+            json!({ "type": "stdio", "command": "/usr/bin/dmsh", "args": ["mcp"], "env": {} })
+        );
+        assert_eq!(added["userID"], "abc");
+        assert_eq!(
+            added["mcpServers"]["other"],
+            original["mcpServers"]["other"]
+        );
+        apply_claude_mcp(&path, &exe(), true).unwrap();
+        let removed: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(removed, original);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn codex_config_keeps_comments_and_other_servers() {
+        let dir = std::env::temp_dir().join(format!("dmsh-codex-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "# my settings\nmodel = \"gpt\"\n\n[mcp_servers.other]\ncommand = \"x\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        apply_codex(&path, &exe(), false).unwrap();
+        apply_codex(&path, &exe(), false).unwrap(); // idempotent
+        let added = std::fs::read_to_string(&path).unwrap();
+        assert!(added.starts_with(original), "{added}");
+        let doc: toml_edit::DocumentMut = added.parse().unwrap();
+        assert_eq!(
+            doc["mcp_servers"]["dmsh"]["command"].as_str(),
+            Some("/usr/bin/dmsh")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["dmsh"]["args"]
+                .as_array()
+                .unwrap()
+                .get(0)
+                .and_then(|v| v.as_str()),
+            Some("mcp")
+        );
+        assert_eq!(added.matches("[mcp_servers.dmsh]").count(), 1);
+
+        apply_codex(&path, &exe(), true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        // A fresh config gets just the server's table.
+        let fresh = dir.join("fresh.toml");
+        apply_codex(&fresh, &exe(), false).unwrap();
+        let text = std::fs::read_to_string(&fresh).unwrap();
+        assert!(text.starts_with("[mcp_servers.dmsh]"), "{text}");
         std::fs::remove_dir_all(dir).ok();
     }
 

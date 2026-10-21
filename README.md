@@ -117,18 +117,22 @@ autostart you can use the systemd unit [`dist/dmsh.service`](dist/dmsh.service)
 
 dmsh shows what your agents are doing and lets them ask you things in the island.
 
-**Claude Code:** session status (working, needs input, done) and permission prompts you
-answer with Allow / Deny right in the island:
+**Claude Code:** session status (working, needs input, done), permission prompts you
+answer with Allow / Deny right in the island, and the MCP tools below. This writes the
+config files directly, so it also works with the desktop app and no `claude` CLI:
 
 ```bash
 dmsh claude-code --apply
 ```
 
-**Any MCP client:** tools to show status, notify and ask you a question:
+**Codex:** the MCP tools (works with the ChatGPT app's bundled Codex too):
 
 ```bash
-claude mcp add --transport stdio dmsh --scope user -- ~/.local/bin/dmsh mcp
+dmsh codex --apply
 ```
+
+**MCP tools** (any MCP client, `dmsh mcp` over stdio): show status, notify, and ask you
+a question with buttons.
 
 Scripts can do the same from the shell (`dmsh activity push … --wait`). See
 [docs/agents.md](docs/agents.md).

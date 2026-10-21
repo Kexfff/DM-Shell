@@ -62,9 +62,13 @@ with `--keep-on-action`, where buttons are pressed repeatedly.
 
 ```bash
 dmsh claude-code            # print the hooks config and the MCP command
-dmsh claude-code --apply    # merge the hooks into ~/.claude/settings.json (keeps a backup)
-dmsh claude-code --remove   # take them out again
+dmsh claude-code --apply    # hooks into ~/.claude/settings.json (keeps a backup),
+                            # MCP server into ~/.claude.json
+dmsh claude-code --remove   # take both out again
 ```
+
+`--apply` edits the files the `claude` CLI would, so it works with Claude Code from the
+desktop app, where there may be no `claude` on your PATH. New sessions pick it up.
 
 The hooks call `dmsh hook <event>`, which reads the hook's JSON on stdin and never fails
 the hook (if dmsh isn't running, it does nothing):
@@ -89,11 +93,17 @@ rules in your settings still apply even if you click Allow.
 ## MCP server
 
 `dmsh mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server over
-stdio. Register it with Claude Code (or any MCP client):
+stdio. Register it with:
 
-```bash
-claude mcp add --transport stdio dmsh --scope user -- ~/.local/bin/dmsh mcp
-```
+| Client | Command | What it writes |
+|---|---|---|
+| Claude Code | `dmsh claude-code --apply` | `mcpServers.dmsh` in `~/.claude.json` (user scope), plus the hooks |
+| Codex | `dmsh codex --apply` | `[mcp_servers.dmsh]` in `~/.codex/config.toml` (or `$CODEX_HOME`), comments and formatting kept |
+| Anything else | — | run `dmsh mcp` over stdio |
+
+`--remove` takes it out again; `dmsh codex` alone prints the snippet. With the CLIs
+installed, `claude mcp add --transport stdio dmsh --scope user -- ~/.local/bin/dmsh mcp`
+and `codex mcp add dmsh -- ~/.local/bin/dmsh mcp` do the same.
 
 | Tool | Arguments | What it does |
 |---|---|---|

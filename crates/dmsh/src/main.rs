@@ -73,12 +73,22 @@ enum Command {
         #[arg(value_parser = parse_hook)]
         event: agent::Hook,
     },
-    /// Set up Claude Code: print (or apply) the hooks config and the MCP command.
+    /// Show how to connect Claude Code, or set up its hooks and MCP server with --apply.
     ClaudeCode {
-        /// Merge dmsh's hooks into ~/.claude/settings.json (a backup is kept).
+        /// Merge dmsh's hooks into ~/.claude/settings.json (a backup is kept) and register
+        /// the MCP server in ~/.claude.json.
         #[arg(long)]
         apply: bool,
-        /// Remove dmsh's hooks from ~/.claude/settings.json.
+        /// Remove dmsh's hooks and MCP server from Claude Code's settings.
+        #[arg(long, conflicts_with = "apply")]
+        remove: bool,
+    },
+    /// Show how to connect Codex, or register the MCP server with --apply.
+    Codex {
+        /// Add the dmsh MCP server to ~/.codex/config.toml.
+        #[arg(long)]
+        apply: bool,
+        /// Remove it from ~/.codex/config.toml.
         #[arg(long, conflicts_with = "apply")]
         remove: bool,
     },
@@ -302,24 +312,41 @@ fn main() -> Result<()> {
             if apply || remove {
                 let settings = agent::claude_settings_path().context("$HOME is not set")?;
                 agent::apply(&settings, &exe, remove)?;
-                let verb = if remove {
-                    "Removed dmsh's hooks from"
+                let claude_json = agent::claude_json_path().context("$HOME is not set")?;
+                agent::apply_claude_mcp(&claude_json, &exe, remove)?;
+                let (hooks, mcp) = if remove {
+                    (
+                        "Removed dmsh's hooks from",
+                        "Removed the dmsh MCP server from",
+                    )
                 } else {
-                    "Added dmsh's hooks to"
+                    ("Added dmsh's hooks to", "Added the dmsh MCP server to")
                 };
                 println!(
-                    "{verb} {} (backup: settings.json.dmsh-backup).",
+                    "{hooks} {} (backup: settings.json.dmsh-backup).",
                     settings.display()
                 );
-                if !remove {
-                    println!("For the MCP tools, also run:");
-                    println!(
-                        "  claude mcp add --transport stdio dmsh --scope user -- '{}' mcp",
-                        exe.display()
-                    );
-                }
+                println!("{mcp} {}.", claude_json.display());
+                println!("New Claude Code sessions pick it up; restart running ones.");
             } else {
                 print!("{}", agent::setup_text(&exe)?);
+            }
+            Ok(())
+        }
+        Command::Codex { apply, remove } => {
+            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            if apply || remove {
+                let config = agent::codex_config_path().context("$HOME is not set")?;
+                agent::apply_codex(&config, &exe, remove)?;
+                let verb = if remove {
+                    "Removed the dmsh MCP server from"
+                } else {
+                    "Added the dmsh MCP server to"
+                };
+                println!("{verb} {}.", config.display());
+                println!("New Codex sessions pick it up; restart running ones.");
+            } else {
+                print!("{}", agent::codex_setup_text(&exe));
             }
             Ok(())
         }
