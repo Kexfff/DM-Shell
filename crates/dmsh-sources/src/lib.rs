@@ -303,6 +303,53 @@ impl Emitter {
 /// event for more before reporting once.
 const SETTLE: Duration = Duration::from_millis(15);
 
+/// Restarts a source that lost its service: the audio server may come up a moment after
+/// dmsh at login, or restart later. Waits 1 s, doubling up to 30 s, and starts over after
+/// a run that lasted a minute. A missing program (no `pactl`) is final.
+struct Retry {
+    name: &'static str,
+    delay: Duration,
+    started: tokio::time::Instant,
+}
+
+impl Retry {
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            delay: Duration::from_secs(1),
+            started: tokio::time::Instant::now(),
+        }
+    }
+
+    /// Call when a run starts.
+    fn start(&mut self) {
+        self.started = tokio::time::Instant::now();
+    }
+
+    /// Call when a run ended with `error`; returns it back if retrying is pointless.
+    async fn after(&mut self, error: anyhow::Error) -> anyhow::Result<()> {
+        let missing = error.chain().any(|e| {
+            e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        });
+        if missing {
+            return Err(error);
+        }
+        if self.started.elapsed() > Duration::from_secs(60) {
+            self.delay = Duration::from_secs(1);
+        }
+        // Loud once per outage, quiet while it lasts.
+        if self.delay == Duration::from_secs(1) {
+            log::warn!("{}: {error:#}; retrying", self.name);
+        } else {
+            log::debug!("{}: {error:#}; retrying in {:?}", self.name, self.delay);
+        }
+        tokio::time::sleep(self.delay).await;
+        self.delay = (self.delay * 2).min(Duration::from_secs(30));
+        Ok(())
+    }
+}
+
 /// After the islands change the volume or brightness, changes for this long don't show
 /// an OSD (the slider already shows them).
 const QUIET_AFTER_SET: Duration = Duration::from_secs(1);

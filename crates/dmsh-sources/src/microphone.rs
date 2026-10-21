@@ -10,13 +10,28 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::{Emitter, SETTLE};
+use crate::{Emitter, Retry, SETTLE};
 
 pub async fn run(emitter: Emitter) -> Result<()> {
-    let mut apps = recording().await?;
-    if apps.is_some() {
-        emitter.capture(Sensor::Mic, true, apps.as_deref().unwrap_or_default());
+    let mut retry = Retry::new("microphone");
+    // Apps recording, or `None` when nothing is; kept across restarts of the audio server.
+    let mut apps = None;
+    loop {
+        retry.start();
+        if let Err(e) = watch(&emitter, &mut apps).await {
+            // Whatever was recording went with the server.
+            if apps.take().is_some() {
+                emitter.capture(Sensor::Mic, false, &[]);
+            }
+            retry.after(e).await?;
+        }
     }
+}
+
+/// Follows recording streams until the audio server goes away.
+async fn watch(emitter: &Emitter, apps: &mut Option<Vec<String>>) -> Result<()> {
+    let now = recording().await?;
+    update(emitter, apps, now);
     let mut child = Command::new("pactl")
         .arg("subscribe")
         .stdout(Stdio::piped())
@@ -32,27 +47,27 @@ pub async fn run(emitter: Emitter) -> Result<()> {
             continue;
         }
         while let Ok(Ok(Some(_))) = tokio::time::timeout(SETTLE, lines.next_line()).await {}
-        let now = match recording().await {
-            Ok(now) => now,
-            Err(e) => {
-                log::debug!("listing recording streams: {e:#}");
-                continue;
-            }
-        };
-        // Announce when recording starts, and again when another app joins in.
-        let joined = match (&apps, &now) {
-            (Some(old), Some(new)) => new.iter().any(|a| !old.contains(a)),
-            (None, Some(_)) => true,
-            _ => false,
-        };
-        if joined {
-            emitter.capture(Sensor::Mic, true, now.as_deref().unwrap_or_default());
-        } else if apps.is_some() && now.is_none() {
-            emitter.capture(Sensor::Mic, false, &[]);
+        match recording().await {
+            Ok(now) => update(emitter, apps, now),
+            Err(e) => log::debug!("listing recording streams: {e:#}"),
         }
-        apps = now;
     }
     anyhow::bail!("`pactl subscribe` exited")
+}
+
+/// Announces when recording starts, and again when another app joins in.
+fn update(emitter: &Emitter, apps: &mut Option<Vec<String>>, now: Option<Vec<String>>) {
+    let joined = match (&*apps, &now) {
+        (Some(old), Some(new)) => new.iter().any(|a| !old.contains(a)),
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    if joined {
+        emitter.capture(Sensor::Mic, true, now.as_deref().unwrap_or_default());
+    } else if apps.is_some() && now.is_none() {
+        emitter.capture(Sensor::Mic, false, &[]);
+    }
+    *apps = now;
 }
 
 /// Apps recording from a microphone, or `None` when nothing is.

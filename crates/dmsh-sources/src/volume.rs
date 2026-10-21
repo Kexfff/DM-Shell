@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::{Emitter, Event, QUIET_AFTER_SET, SETTLE};
+use crate::{Emitter, Event, QUIET_AFTER_SET, Retry, SETTLE};
 
 /// Changes asked for by the islands.
 #[derive(Debug)]
@@ -46,6 +46,19 @@ pub(crate) async fn run(
     emitter: Emitter,
     mut commands: mpsc::UnboundedReceiver<SetVolume>,
 ) -> Result<()> {
+    let mut retry = Retry::new("volume");
+    loop {
+        retry.start();
+        if let Err(e) = watch(&emitter, &mut commands).await {
+            retry.after(e).await?;
+        }
+    }
+}
+
+/// Follows the volume until the audio server goes away.
+async fn watch(emitter: &Emitter, commands: &mut mpsc::UnboundedReceiver<SetVolume>) -> Result<()> {
+    // Requests made while the server was away are stale now.
+    while commands.try_recv().is_ok() {}
     let mut last = read().await?;
     emitter.emit(Event::Volume(last.level()));
     // Changes made from the slider don't need an OSD on top of it.
@@ -167,6 +180,7 @@ fn parse(text: &str) -> Option<Volume> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn parses_wpctl_output() {
@@ -185,5 +199,69 @@ mod tests {
             })
         );
         assert_eq!(parse("garbage"), None);
+    }
+
+    /// At login dmsh can start before the audio server is ready; the volume must show up
+    /// once it is, not be given up on. Fake `wpctl`/`pactl` stand in for PipeWire.
+    #[tokio::test(flavor = "current_thread")]
+    async fn waits_for_the_audio_server() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let dir = std::env::temp_dir().join(format!("dmsh-volume-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ready = dir.join("ready");
+        let scripts = [
+            (
+                "wpctl",
+                format!(
+                    "#!/bin/sh\n[ -e {} ] || {{ echo 'Could not connect to PipeWire' >&2; exit 1; }}\necho 'Volume: 0.40'\n",
+                    ready.display()
+                ),
+            ),
+            ("pactl", "#!/bin/sh\nexec sleep 30\n".to_owned()),
+        ];
+        for (name, body) in scripts {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        // SAFETY: only this test runs `wpctl` or `pactl`; the fake directory holds nothing else.
+        unsafe { std::env::set_var("PATH", path) };
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let emitter = Emitter {
+            emit: Arc::new(move |e| {
+                if let Event::Volume(level) = e {
+                    sink.lock().unwrap().push(level);
+                }
+            }),
+            config: Arc::new(RwLock::new(Default::default())),
+            config_changed: Default::default(),
+        };
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let source = tokio::spawn(run(emitter, rx));
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(events.lock().unwrap().is_empty(), "no server yet");
+        std::fs::write(&ready, "").unwrap();
+        // The first retry comes a second after the first failure.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(
+            events.lock().unwrap().first(),
+            Some(&Level {
+                value: 0.4,
+                muted: false
+            })
+        );
+        assert!(!source.is_finished(), "still following the volume");
+        source.abort();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
