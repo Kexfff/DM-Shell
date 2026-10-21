@@ -75,11 +75,15 @@ the hook (if dmsh isn't running, it does nothing):
 
 | Claude Code event | `dmsh hook` | In the island |
 |---|---|---|
-| `UserPromptSubmit`, `PostToolUse` | `working` | "Working" in the center (low priority, so anything else wins) |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `working` | "Working" in the center (low priority, so anything else wins); expires after 10 minutes without another event |
 | `Notification` | `notification` | "Claude needs your permission…" in the center |
 | `PermissionRequest` | `permission` | **Allow / Deny / In terminal** — see below |
 | `Stop` | `stop` | "Done" pops up, then waits on the right island (30 min) |
 | `SessionEnd` | `end` | Removes the session's activities |
+
+Claude Code doesn't run `Stop` when you interrupt a turn (Esc), so "Working" also
+expires on its own, 10 minutes after the last prompt or tool call. Hook input without a
+session id is ignored rather than shown, since nothing could clear it later.
 
 Each session gets its own activities (keyed by session id) labeled "Claude Code" with the
 project's folder name, so several sessions don't overwrite each other.

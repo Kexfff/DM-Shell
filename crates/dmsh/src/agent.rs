@@ -86,11 +86,12 @@ const PERMISSION_WAIT: Duration = Duration::from_secs(60);
 /// nothing (and for permissions, leaves Claude Code's own prompt to ask).
 pub fn hook(event: Hook) -> Result<()> {
     let mut input = String::new();
+    // All of it: PostToolUse carries the tool's whole output, easily over a megabyte.
     std::io::stdin()
-        .take(1 << 20)
+        .take(MAX_HOOK_INPUT)
         .read_to_string(&mut input)
         .ok();
-    let input: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+    let input = parse_hook_input(&input);
     match run_hook(event, &input) {
         Ok(Some(output)) => println!("{output}"),
         Ok(None) => {}
@@ -99,8 +100,48 @@ pub fn hook(event: Hook) -> Result<()> {
     Ok(())
 }
 
+/// More than any hook input should be; past this the JSON is cut off and only the fields
+/// near its start are recovered.
+const MAX_HOOK_INPUT: u64 = 64 << 20;
+
+/// How long "Working" stays without news. Each prompt and tool call renews it; it's for
+/// when no Stop follows (Claude Code skips Stop when you interrupt a turn).
+const WORKING_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The hook's JSON; if it doesn't parse (cut off, or something odd), at least the session
+/// id and folder, which Claude Code puts first.
+fn parse_hook_input(text: &str) -> Value {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        return value;
+    }
+    let field = |name: &str| -> Option<String> {
+        let start = text.find(&format!("\"{name}\""))? + name.len() + 2;
+        let rest = text[start..].trim_start().strip_prefix(':')?.trim_start();
+        // A JSON string up to its closing quote, decoded (paths may escape characters).
+        let mut end = None;
+        let mut escaped = false;
+        for (i, c) in rest.char_indices().skip(1) {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => {
+                    end = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        serde_json::from_str(&rest[..=end?]).ok()
+    };
+    json!({ "session_id": field("session_id"), "cwd": field("cwd") })
+}
+
 fn run_hook(event: Hook, input: &Value) -> Result<Option<Value>> {
-    let session = input["session_id"].as_str().unwrap_or("session");
+    // Without a session there's nothing to key the status on, and nothing would ever
+    // clear it; a permission request then falls back to Claude Code's own prompt.
+    let Some(session) = input["session_id"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
     let id = format!("claude:{}", &session[..session.len().min(8)]);
     let project = input["cwd"]
         .as_str()
@@ -121,6 +162,7 @@ fn run_hook(event: Hook, input: &Value) -> Result<Option<Value>> {
             push(ActivitySpec {
                 placement: Placement::Center,
                 priority: Priority::Low,
+                ttl_ms: Some(WORKING_TTL.as_millis() as u64),
                 ..status("Working", "terminal")
             })?
         }
@@ -222,6 +264,8 @@ fn truncate(s: &str, max: usize) -> String {
 /// `(Claude Code hook event, dmsh hook argument)`.
 const HOOKS: &[(&str, &str)] = &[
     ("UserPromptSubmit", "working"),
+    // Before and after tools, so a long one doesn't let "Working" expire meanwhile.
+    ("PreToolUse", "working"),
     ("PostToolUse", "working"),
     ("Notification", "notification"),
     ("PermissionRequest", "permission"),
@@ -424,7 +468,8 @@ Merge this into ~/.claude/settings.json (or run `dmsh claude-code --apply`):
 
 {hooks}
 
-- UserPromptSubmit / PostToolUse: "Working" in the center (low priority)
+- UserPromptSubmit / PreToolUse / PostToolUse: "Working" in the center (low priority;
+  expires 10 minutes after the last of them, e.g. after an interrupted turn)
 - Notification: "needs your input" in the center
 - PermissionRequest: Allow / Deny / In terminal in the island; no answer within a
   minute (or dmsh not running) falls back to Claude Code's own prompt
@@ -576,6 +621,34 @@ mod tests {
         let text = std::fs::read_to_string(&fresh).unwrap();
         assert!(text.starts_with("[mcp_servers.dmsh]"), "{text}");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn hook_input_survives_being_cut_off() {
+        let full = json!({
+            "session_id": "d84f7f61-e76e",
+            "cwd": "/home/me/My \"Project\"",
+            "tool_response": "x".repeat(100),
+        })
+        .to_string();
+        assert_eq!(
+            parse_hook_input(&full)["tool_response"]
+                .as_str()
+                .unwrap()
+                .len(),
+            100
+        );
+        let cut = parse_hook_input(&full[..full.len() - 40]);
+        assert_eq!(cut["session_id"], "d84f7f61-e76e");
+        assert_eq!(cut["cwd"], "/home/me/My \"Project\"");
+        assert_eq!(parse_hook_input("")["session_id"], Value::Null);
+    }
+
+    #[test]
+    fn no_session_no_status() {
+        // Nothing would ever clear a status that isn't tied to a session.
+        assert_eq!(run_hook(Hook::Working, &json!({})).unwrap(), None);
+        assert_eq!(run_hook(Hook::Stop, &Value::Null).unwrap(), None);
     }
 
     #[test]
