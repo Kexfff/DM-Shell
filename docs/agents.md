@@ -156,6 +156,7 @@ an extra `at_ms` field delays an entry:
 | `--brightness 70` | — | Show the brightness button at this level. |
 | `--slider volume\|mic\|brightness` | closed | Show that slider open in place of the buttons. |
 | `--privacy screen,mic,camera` | none | Show capture indicators. |
+| `--weather 11°` | none | Show a temperature before the battery (`--weather=-3°` for negatives). |
 | `--session [ACTION:PROGRESS]` | closed | Show the session menu open, e.g. `--session reboot:0.6` with Reboot held 60% of the way. |
 | `--width`, `--scale` | `1645`, `1.75` | Logical output width and scale. |
 | `--crop X,WIDTH` | — | Keep a logical x range. |

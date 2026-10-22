@@ -129,6 +129,7 @@ the rest keep running. Nothing polls: every source is event-driven.
 |---|---|---|
 | niri | event stream on `$NIRI_SOCKET` | focused output; keyboard layout OSD; screen-share indicator while a cast is active |
 | microphone | `pactl subscribe`, then `pactl -f json list source-outputs` on stream/source events | microphone indicator while something records from a real source (not a monitor, not pavucontrol's meters, not paused) |
+| weather | `curl` to wttr.in (`?format=%t`) every `weather.interval` (20 min), sooner after a config change; retries every 2 min on failure | the temperature before the battery on the right island; the last reading stays up to an hour, then it's hidden |
 | camera | inotify (open/close) on `/dev/video*` and new ones in `/dev`, settled 1 s, then a `/proc/*/fd` scan | camera indicator while a process has a camera open |
 | clock | one wakeup per minute boundary | idle center text (`view.clock`) |
 | volume | `pactl subscribe`, then `wpctl get-volume` on the default sink/source only on sink/source/server events; retried while the audio server is down | center OSD, 1.5 s (volume, microphone) |

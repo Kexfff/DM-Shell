@@ -59,6 +59,7 @@ sources {
     screencast true
     microphone true
     camera true
+    weather true
 }
 
 timing {
@@ -74,4 +75,14 @@ session {
     poweroff "systemctl poweroff"
     reboot "systemctl reboot"
     logout "niri msg action quit --skip-confirmation"
+}
+
+// The temperature on the right island, from wttr.in (needs curl). Hidden while it
+// can't be fetched.
+weather {
+    // A place wttr.in understands, e.g. "Berlin"; unset guesses from your IP address.
+    // location "Berlin"
+    // celsius, fahrenheit, or auto (the place's usual units).
+    units "auto"
+    interval "20m"
 }

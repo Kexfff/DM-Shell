@@ -26,6 +26,25 @@ pub struct Config {
     pub sources: Sources,
     pub timing: Timing,
     pub session: Session,
+    pub weather: Weather,
+}
+
+/// The temperature on the right island, from wttr.in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Weather {
+    /// A place wttr.in understands ("Berlin", "~Eiffel Tower", an airport code);
+    /// `None` lets it guess from your IP address.
+    pub location: Option<String>,
+    /// `None` uses the place's usual units.
+    pub units: Option<Units>,
+    /// How often to check.
+    pub interval: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Units {
+    Celsius,
+    Fahrenheit,
 }
 
 /// The session menu: how long to hold an option, and the commands it runs (via `sh -c`).
@@ -85,6 +104,7 @@ pub struct Sources {
     pub screencast: bool,
     pub microphone: bool,
     pub camera: bool,
+    pub weather: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +139,7 @@ impl Default for Config {
                 screencast: true,
                 microphone: true,
                 camera: true,
+                weather: true,
             },
             timing: Timing {
                 osd: Duration::from_millis(1500),
@@ -130,6 +151,11 @@ impl Default for Config {
                 poweroff: "systemctl poweroff".into(),
                 reboot: "systemctl reboot".into(),
                 logout: "niri msg action quit --skip-confirmation".into(),
+            },
+            weather: Weather {
+                location: None,
+                units: None,
+                interval: Duration::from_secs(20 * 60),
             },
         }
     }
@@ -175,6 +201,7 @@ impl Config {
                 "sources" => p.sources(node, &mut config.sources)?,
                 "timing" => p.timing(node, &mut config.timing)?,
                 "session" => p.session(node, &mut config.session)?,
+                "weather" => p.weather(node, &mut config.weather)?,
                 other => return Err(p.error(node, format!("unknown section `{other}`"))),
             }
         }
@@ -398,6 +425,7 @@ impl Parser<'_> {
                 "screencast" => &mut sources.screencast,
                 "microphone" => &mut sources.microphone,
                 "camera" => &mut sources.camera,
+                "weather" => &mut sources.weather,
                 other => return Err(self.error(node, format!("unknown source `{other}`"))),
             };
             *slot = self.flag(node)?;
@@ -414,6 +442,39 @@ impl Parser<'_> {
                 other => return Err(self.error(node, format!("unknown timing option `{other}`"))),
             };
             *slot = self.duration(node)?;
+        }
+        Ok(())
+    }
+
+    fn weather(&self, section: &KdlNode, weather: &mut Weather) -> Result<(), ConfigError> {
+        for node in self.children(section) {
+            match node.name().value() {
+                "location" => {
+                    let place = self.string(node)?;
+                    weather.location = Some(place).filter(|p| !p.trim().is_empty());
+                }
+                "units" => {
+                    weather.units = match self.string(node)?.as_str() {
+                        "celsius" => Some(Units::Celsius),
+                        "fahrenheit" => Some(Units::Fahrenheit),
+                        "auto" => None,
+                        other => {
+                            return Err(self.error(
+                                node,
+                                format!("units `{other}`: use celsius, fahrenheit or auto"),
+                            ));
+                        }
+                    }
+                }
+                "interval" => {
+                    let interval = self.duration(node)?;
+                    if interval < Duration::from_secs(60) {
+                        return Err(self.error(node, "interval: at least 1m (wttr.in is free)"));
+                    }
+                    weather.interval = interval;
+                }
+                other => return Err(self.error(node, format!("unknown weather option `{other}`"))),
+            }
         }
         Ok(())
     }
@@ -476,6 +537,7 @@ mod tests {
             sources { tray #false; }
             timing { osd "900ms"; }
             session { hold "1s"; logout "loginctl terminate-session self"; }
+            weather { location "Saint Petersburg"; units "fahrenheit"; interval "30m"; }
         "##;
         let c = Config::parse(v2).unwrap();
         assert_eq!(c.font.as_deref(), Some("Geist"));
@@ -493,6 +555,11 @@ mod tests {
             "loginctl terminate-session self"
         );
         assert_eq!(c.session.reboot, "systemctl reboot");
+        assert_eq!(c.weather.location.as_deref(), Some("Saint Petersburg"));
+        assert_eq!(c.weather.units, Some(Units::Fahrenheit));
+        assert_eq!(c.weather.interval, Duration::from_secs(30 * 60));
+        assert!(Config::parse("weather { interval \"10s\"; }").is_err());
+        assert!(Config::parse("weather { units \"kelvin\"; }").is_err());
 
         let v1 = "sources {\n    tray false\n}\n";
         assert!(!Config::parse(v1).unwrap().sources.tray);

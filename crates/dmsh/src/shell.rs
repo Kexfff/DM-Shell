@@ -118,6 +118,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         volume: None,
         brightness: None,
         mic: None,
+        weather: None,
         privacy: Privacy::default(),
         images: crate::images::ImageResolver::new(),
         qh: qh.clone(),
@@ -213,6 +214,7 @@ pub struct Shell {
     volume: Option<Level>,
     brightness: Option<Level>,
     mic: Option<Level>,
+    weather: Option<String>,
     privacy: Privacy,
     images: crate::images::ImageResolver,
     qh: QueueHandle<Shell>,
@@ -467,6 +469,7 @@ impl Shell {
                 ..Controls::default()
             },
             privacy: self.privacy,
+            weather: self.weather.clone(),
             ..self.activities.view_for(now, focused)
         };
         let views = Views {
@@ -544,6 +547,10 @@ impl Shell {
                     self.mic = level;
                     self.refresh();
                 }
+            }
+            SourceEvent::Weather(temperature) => {
+                self.weather = temperature;
+                self.refresh();
             }
             SourceEvent::Privacy(sensor, on) => {
                 self.privacy.set(sensor, on);

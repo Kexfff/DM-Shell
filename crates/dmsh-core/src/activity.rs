@@ -244,6 +244,9 @@ pub struct View {
     /// Screen sharing, microphone and camera in use, shown as icons on the right island.
     #[serde(default)]
     pub privacy: Privacy,
+    /// The current temperature (e.g. "11°"), shown before the battery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<String>,
     /// First list row shown in the expanded right island (UI state, per output).
     #[serde(skip)]
     pub right_scroll: usize,
@@ -609,6 +612,7 @@ impl Activities {
             battery: None,
             controls: Controls::default(),
             privacy: Privacy::default(),
+            weather: None,
             right_scroll: 0,
         }
     }

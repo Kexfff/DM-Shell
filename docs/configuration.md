@@ -124,6 +124,7 @@ sources {
     screencast true
     microphone true
     camera true
+    weather true
 }
 ```
 
@@ -143,6 +144,7 @@ Turns event sources on or off; all are on by default. A bare name means `true`
 | `screencast` | A red screen icon on the right island while a niri screencast is active ("Screen is being shared" for a few seconds when it starts). |
 | `microphone` | An orange microphone icon while an app records from a microphone (not from a speaker's monitor), via `pactl`. |
 | `camera` | A green camera icon while an app has a camera (`/dev/video*`) open. |
+| `weather` | The current temperature before the battery, from [wttr.in](https://wttr.in) via `curl`. See [`weather`](#weather). |
 
 ## `timing`
 
@@ -161,6 +163,28 @@ timing {
 | `notification-center` | `2s` | How long a notification stays in the center before moving right. |
 
 Durations take a unit: `ms`, `s` or `m`.
+
+## `weather`
+
+```kdl
+weather {
+    location "Berlin"
+    units "celsius"
+    interval "20m"
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `location` | unset | A place [wttr.in](https://wttr.in/:help) understands: a city, `~Eiffel Tower`, an airport code, `55.75,37.62`. Unset, wttr.in guesses from your IP address (a VPN moves it). |
+| `units` | `auto` | `celsius`, `fahrenheit`, or `auto` (the place's usual units). |
+| `interval` | `20m` | How often to check; at least `1m`. |
+
+The temperature shows as e.g. `11°` before the battery. It's fetched with `curl`; while
+it can't be (offline, wttr.in down, an unknown place) the last reading stays up to an
+hour, then nothing is shown, and it retries every 2 minutes. Each check sends wttr.in
+your IP address (and the location, if set); turn it off with `weather false` under
+`sources`.
 
 ## `session`
 

@@ -17,6 +17,7 @@ mod notifications;
 mod power;
 pub mod tray;
 pub mod volume;
+mod weather;
 
 use std::future::Future;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
@@ -52,6 +53,8 @@ pub enum Event {
     Mic(Option<dmsh_core::Level>),
     /// The backlight level, at startup and whenever it changes.
     Brightness(dmsh_core::Level),
+    /// The current temperature, e.g. "11°"; `None` while it can't be fetched.
+    Weather(Option<String>),
     /// The screen, a microphone or a camera started or stopped being captured.
     Privacy(dmsh_core::Sensor, bool),
     /// Raw pixels an activity refers to as its `image` (`key`), e.g. a notification's
@@ -158,6 +161,9 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     }
     if enabled.camera {
         tokio::spawn(supervise("camera", camera::run(emitter.clone())));
+    }
+    if enabled.weather {
+        tokio::spawn(supervise("weather", weather::run(emitter.clone())));
     }
     if enabled.media {
         tokio::spawn(supervise("media", media::run(emitter.clone(), media_rx)));

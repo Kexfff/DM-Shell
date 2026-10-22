@@ -36,6 +36,8 @@ AI agents can put things on the islands and wait for answers.
   (drag, scroll or arrow keys); hold volume or microphone to mute.
 - **Session menu**: the power button opens Shut down · Reboot · Log out; hold one until
   it fills to run it, so a stray click never logs you out.
+- **Weather**: the current temperature before the battery, from wttr.in; hidden when it
+  can't be fetched.
 - **Privacy indicators**: screen sharing, microphone and camera each show an icon while
   in use, announced by name for a few seconds when they start.
 - **niri integration**: focused-monitor awareness, keyboard-layout indicator, keybind
@@ -69,6 +71,7 @@ scope; pick the tools you like for those.
   - UPower — battery
   - NetworkManager — Wi-Fi messages and the Wi-Fi toggle
   - systemd-logind — clock refresh after suspend
+  - `curl` — the weather
 
 Missing optional services just switch that feature off (dmsh logs a warning).
 

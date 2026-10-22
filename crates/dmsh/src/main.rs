@@ -102,72 +102,78 @@ enum Command {
         state: String,
     },
     /// Draw the islands headlessly to a PNG, simulating animations on a fake clock.
-    Render {
-        #[arg(short, long, default_value = "dmsh.png")]
-        output: String,
-        /// Logical output width.
-        #[arg(long, default_value_t = 1645.0)]
-        width: f32,
-        #[arg(long, default_value_t = 1.75)]
-        scale: f32,
-        /// JSON file with an array of activity specs (as sent by `push`); an `at_ms` field
-        /// delays an entry.
-        #[arg(long)]
-        activities: Option<String>,
-        /// Render this long into the simulation, e.g. 2500ms.
-        #[arg(long, value_parser = parse_duration, default_value = "3s")]
-        at: Duration,
-        /// Hover an island (center or right).
-        #[arg(long, value_parser = parse_hover)]
-        hover: Option<IslandKind>,
-        /// When the hover starts.
-        #[arg(long, value_parser = parse_duration, default_value = "0ms")]
-        hover_at: Duration,
-        /// Render a frame every interval up to --at, stacked vertically.
-        #[arg(long, value_parser = parse_duration)]
-        filmstrip: Option<Duration>,
-        #[arg(long, default_value = "13:35")]
-        clock: String,
-        #[arg(long, default_value = "Thursday, 15 October")]
-        date: String,
-        /// Background color behind the islands, e.g. #3c3c40 (default: transparent).
-        #[arg(long)]
-        background: Option<String>,
-        /// Keep only a logical x range: <x>,<width>.
-        #[arg(long, value_parser = parse_crop)]
-        crop: Option<(f32, f32)>,
-        /// Pointer position for hover highlights: <x>,<y> (logical).
-        #[arg(long, value_parser = parse_crop)]
-        pointer: Option<(f32, f32)>,
-        /// Show a battery at this percent (append `+` for charging, e.g. 76+).
-        #[arg(long)]
-        battery: Option<String>,
-        /// Show the Wi-Fi quick control: on or off.
-        #[arg(long, value_parser = ["on", "off"])]
-        wifi: Option<String>,
-        /// Render with do not disturb on.
-        #[arg(long)]
-        dnd: bool,
-        /// Show the session menu open, optionally with an option held part way,
-        /// e.g. `--session reboot:0.6`.
-        #[arg(long, num_args = 0..=1, default_missing_value = "")]
-        session: Option<String>,
-        /// Show the volume button at this percent (`45:muted` for muted).
-        #[arg(long)]
-        volume: Option<String>,
-        /// Show the microphone button at this percent (`60:muted` for muted).
-        #[arg(long)]
-        mic: Option<String>,
-        /// Show the brightness button at this percent.
-        #[arg(long)]
-        brightness: Option<String>,
-        /// Show a slider open: volume, mic or brightness.
-        #[arg(long, value_parser = ["volume", "mic", "brightness"])]
-        slider: Option<String>,
-        /// Show capture indicators: any of screen, mic, camera (comma-separated).
-        #[arg(long, value_delimiter = ',', value_parser = ["screen", "mic", "camera"])]
-        privacy: Vec<String>,
-    },
+    Render(Box<RenderArgs>),
+}
+
+#[derive(clap::Args)]
+struct RenderArgs {
+    #[arg(short, long, default_value = "dmsh.png")]
+    output: String,
+    /// Logical output width.
+    #[arg(long, default_value_t = 1645.0)]
+    width: f32,
+    #[arg(long, default_value_t = 1.75)]
+    scale: f32,
+    /// JSON file with an array of activity specs (as sent by `push`); an `at_ms` field
+    /// delays an entry.
+    #[arg(long)]
+    activities: Option<String>,
+    /// Render this long into the simulation, e.g. 2500ms.
+    #[arg(long, value_parser = parse_duration, default_value = "3s")]
+    at: Duration,
+    /// Hover an island (center or right).
+    #[arg(long, value_parser = parse_hover)]
+    hover: Option<IslandKind>,
+    /// When the hover starts.
+    #[arg(long, value_parser = parse_duration, default_value = "0ms")]
+    hover_at: Duration,
+    /// Render a frame every interval up to --at, stacked vertically.
+    #[arg(long, value_parser = parse_duration)]
+    filmstrip: Option<Duration>,
+    #[arg(long, default_value = "13:35")]
+    clock: String,
+    #[arg(long, default_value = "Thursday, 15 October")]
+    date: String,
+    /// Background color behind the islands, e.g. #3c3c40 (default: transparent).
+    #[arg(long)]
+    background: Option<String>,
+    /// Keep only a logical x range: <x>,<width>.
+    #[arg(long, value_parser = parse_crop)]
+    crop: Option<(f32, f32)>,
+    /// Pointer position for hover highlights: <x>,<y> (logical).
+    #[arg(long, value_parser = parse_crop)]
+    pointer: Option<(f32, f32)>,
+    /// Show a battery at this percent (append `+` for charging, e.g. 76+).
+    #[arg(long)]
+    battery: Option<String>,
+    /// Show the Wi-Fi quick control: on or off.
+    #[arg(long, value_parser = ["on", "off"])]
+    wifi: Option<String>,
+    /// Render with do not disturb on.
+    #[arg(long)]
+    dnd: bool,
+    /// Show the session menu open, optionally with an option held part way,
+    /// e.g. `--session reboot:0.6`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    session: Option<String>,
+    /// Show the volume button at this percent (`45:muted` for muted).
+    #[arg(long)]
+    volume: Option<String>,
+    /// Show the microphone button at this percent (`60:muted` for muted).
+    #[arg(long)]
+    mic: Option<String>,
+    /// Show the brightness button at this percent.
+    #[arg(long)]
+    brightness: Option<String>,
+    /// Show a slider open: volume, mic or brightness.
+    #[arg(long, value_parser = ["volume", "mic", "brightness"])]
+    slider: Option<String>,
+    /// Show this temperature before the battery, e.g. `11°`.
+    #[arg(long)]
+    weather: Option<String>,
+    /// Show capture indicators: any of screen, mic, camera (comma-separated).
+    #[arg(long, value_delimiter = ',', value_parser = ["screen", "mic", "camera"])]
+    privacy: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -385,73 +391,78 @@ fn main() -> Result<()> {
             dmsh_render::icon_names().for_each(|name| println!("{name}"));
             Ok(())
         }
-        Command::Render {
-            output,
-            width,
-            scale,
-            activities,
-            at,
-            hover,
-            hover_at,
-            filmstrip,
-            clock,
-            date,
-            background,
-            crop,
-            pointer,
-            battery,
-            wifi,
-            dnd,
-            session,
-            volume,
-            mic,
-            brightness,
-            slider,
-            privacy,
-        } => headless::render(headless::Options {
-            privacy: {
-                let on = |s: &str| privacy.iter().any(|p| p == s);
-                dmsh_core::Privacy {
-                    screen: on("screen"),
-                    mic: on("mic"),
-                    camera: on("camera"),
-                }
-            },
-            volume: volume.as_deref().map(parse_level).transpose()?,
-            mic: mic.as_deref().map(parse_level).transpose()?,
-            brightness: brightness.as_deref().map(parse_level).transpose()?,
-            slider: slider.map(|s| match s.as_str() {
-                "volume" => Slider::Volume,
-                "mic" => Slider::Mic,
-                _ => Slider::Brightness,
-            }),
-            session: session
-                .as_deref()
-                .map(parse_session)
-                .transpose()
-                .map_err(anyhow::Error::msg)?,
-            dnd,
-            battery: battery.as_deref().map(parse_battery).transpose()?,
-            wifi: wifi.map(|w| w == "on"),
-            config: match &cli.config {
-                Some(path) => config::load(Some(path))
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
-                None => dmsh_core::config::Config::default(),
-            },
-            output,
-            width,
-            scale,
-            activities,
-            at,
-            hover,
-            hover_at,
-            filmstrip,
-            clock,
-            date,
-            background,
-            crop,
-            pointer,
-        }),
+        Command::Render(args) => {
+            let RenderArgs {
+                output,
+                width,
+                scale,
+                activities,
+                at,
+                hover,
+                hover_at,
+                filmstrip,
+                clock,
+                date,
+                background,
+                crop,
+                pointer,
+                battery,
+                wifi,
+                dnd,
+                session,
+                volume,
+                mic,
+                brightness,
+                slider,
+                privacy,
+                weather,
+            } = *args;
+            headless::render(headless::Options {
+                weather,
+                privacy: {
+                    let on = |s: &str| privacy.iter().any(|p| p == s);
+                    dmsh_core::Privacy {
+                        screen: on("screen"),
+                        mic: on("mic"),
+                        camera: on("camera"),
+                    }
+                },
+                volume: volume.as_deref().map(parse_level).transpose()?,
+                mic: mic.as_deref().map(parse_level).transpose()?,
+                brightness: brightness.as_deref().map(parse_level).transpose()?,
+                slider: slider.map(|s| match s.as_str() {
+                    "volume" => Slider::Volume,
+                    "mic" => Slider::Mic,
+                    _ => Slider::Brightness,
+                }),
+                session: session
+                    .as_deref()
+                    .map(parse_session)
+                    .transpose()
+                    .map_err(anyhow::Error::msg)?,
+                dnd,
+                battery: battery.as_deref().map(parse_battery).transpose()?,
+                wifi: wifi.map(|w| w == "on"),
+                config: match &cli.config {
+                    Some(path) => config::load(Some(path))
+                        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
+                    None => dmsh_core::config::Config::default(),
+                },
+                output,
+                width,
+                scale,
+                activities,
+                at,
+                hover,
+                hover_at,
+                filmstrip,
+                clock,
+                date,
+                background,
+                crop,
+                pointer,
+            })
+        }
     }
 }
 

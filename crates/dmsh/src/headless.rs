@@ -44,6 +44,7 @@ pub struct Options {
     /// The slider shown open.
     pub slider: Option<dmsh_core::Slider>,
     pub privacy: dmsh_core::Privacy,
+    pub weather: Option<String>,
 }
 
 pub fn render(opts: Options) -> Result<()> {
@@ -88,6 +89,7 @@ pub fn render(opts: Options) -> Result<()> {
                 slider: opts.slider,
             },
             privacy: opts.privacy,
+            weather: opts.weather.clone(),
             ..activities.view(now)
         };
         let hover = opts.hover.filter(|_| t >= opts.hover_at);

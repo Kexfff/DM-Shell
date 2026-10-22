@@ -380,6 +380,7 @@ pub fn right_content(
     let empty = view.right.is_none()
         && view.tray.is_empty()
         && view.battery.is_none()
+        && view.weather.is_none()
         && !view.privacy.any();
     match expanded {
         // Expanded always has the quick controls, even with nothing else to show.
@@ -723,8 +724,18 @@ fn right_compact(view: &View, theme: &Theme, m: &mut dyn Measure) -> Content {
         x += size + 8.0;
         end_pad = PAD;
     }
-    if let Some(battery) = &view.battery {
+    if let Some(temperature) = &view.weather {
         if !view.tray.is_empty() && !view.controls.dnd {
+            x += 4.0;
+        }
+        let style = TextStyle::new(12.0, Weight::Semibold);
+        let (t, tw, th) = text(m, temperature, style, theme.text, 60.0, 1);
+        items.push(place(t, x, (h - th) / 2.0));
+        x += tw + 10.0;
+        end_pad = PAD - 10.0;
+    }
+    if let Some(battery) = &view.battery {
+        if !view.tray.is_empty() && !view.controls.dnd && view.weather.is_none() {
             x += 4.0;
         }
         let size = 20.0;
@@ -2155,6 +2166,45 @@ pub(crate) mod tests {
             let menu = right_content(&v, true, &theme, &mut m).unwrap();
             assert_eq!(menu.w, width);
         }
+    }
+
+    #[test]
+    fn temperature_sits_right_before_the_battery() {
+        let theme = Theme::default();
+        let mut m = FakeMeasure;
+        let mut v = view(None, &[]);
+        v.weather = Some("11°".into());
+        let alone = right_content(&v, false, &theme, &mut m).expect("shown on its own");
+        assert!(
+            alone
+                .items
+                .iter()
+                .any(|d| matches!(d, Draw::Text(t) if t.text == "11°"))
+        );
+        v.battery = Some(BatteryView {
+            percent: 76,
+            charging: false,
+            level: BatteryLevel::Normal,
+        });
+        v.controls.dnd = true;
+        let c = right_content(&v, false, &theme, &mut m).unwrap();
+        let x_of = |name: &str| -> f32 {
+            c.items
+                .iter()
+                .find_map(|d| match d {
+                    Draw::Text(t) if t.text == name => Some(t.rect.x),
+                    Draw::Icon(i) if i.name == name => Some(i.rect.x),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // The battery icon comes just before its percent.
+        let battery_x = x_of("76%") - 24.0;
+        assert!(x_of("moon") < x_of("11°"));
+        assert!(x_of("11°") < battery_x);
+        v.weather = None;
+        let without = right_content(&v, false, &theme, &mut m).unwrap();
+        assert!(without.w < c.w);
     }
 
     #[test]
