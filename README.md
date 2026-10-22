@@ -37,6 +37,8 @@ AI agents can put things on the islands and wait for answers.
   (drag, scroll or arrow keys); hold volume or microphone to mute.
 - **Session menu**: the power button opens Shut down · Reboot · Log out; hold one until
   it fills to run it, so a stray click never logs you out.
+- **Bluetooth**: "Ear (2) connected · 80%" when a device connects, a heads-up when its
+  battery runs low (BlueZ).
 - **Weather**: the current temperature before the battery, from wttr.in; hidden when it
   can't be fetched.
 - **Privacy indicators**: screen sharing, microphone and camera each show an icon while
@@ -71,6 +73,7 @@ scope; pick the tools you like for those.
   - PipeWire with `pipewire-pulse` (`pactl`, `wpctl`) — volume OSD
   - UPower — battery
   - NetworkManager — Wi-Fi messages and the Wi-Fi toggle
+  - BlueZ — Bluetooth connect messages and battery
   - systemd-logind — clock refresh after suspend
   - `curl` — the weather
 

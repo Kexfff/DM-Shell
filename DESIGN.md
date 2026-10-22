@@ -132,6 +132,7 @@ the rest keep running. Nothing polls: every source is event-driven.
 |---|---|---|
 | niri | event stream on `$NIRI_SOCKET` | focused output; keyboard layout OSD; screen-share indicator while a cast is active |
 | microphone | `pactl subscribe`, then `pactl -f json list source-outputs` on stream/source events | microphone indicator while something records from a real source (not a monitor, not pavucontrol's meters, not paused) |
+| bluetooth | BlueZ on the system bus: `ObjectManager` for devices, `PropertiesChanged` under `/org/bluez` | right, low: "<name> connected · 80%" (a battery reported within 15 s of connecting updates it) / "… disconnected"; flow, high: "<name> battery low · 14%" once at ≤ 15 % until it's back to 25 % |
 | weather | `curl` to wttr.in (`?format=%t`) every `weather.interval` (20 min), sooner after a config change; retries every 2 min on failure | the temperature before the battery on the right island; the last reading stays up to an hour, then it's hidden |
 | camera | inotify (open/close) on `/dev/video*` and new ones in `/dev`, settled 1 s, then a `/proc/*/fd` scan | camera indicator while a process has a camera open |
 | clock | one wakeup per minute boundary | idle center text (`view.clock`) |

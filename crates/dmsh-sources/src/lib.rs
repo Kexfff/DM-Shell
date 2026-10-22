@@ -6,6 +6,7 @@
 //! [`Request`]s IPC clients use, plus a few shell-only events. A source that can't start
 //! (service missing, name taken) logs a warning and the others keep running.
 
+mod bluetooth;
 mod brightness;
 mod camera;
 mod clock;
@@ -161,6 +162,9 @@ async fn run(emitter: Emitter, mut commands: mpsc::UnboundedReceiver<Command>) {
     }
     if enabled.camera {
         tokio::spawn(supervise("camera", camera::run(emitter.clone())));
+    }
+    if enabled.bluetooth {
+        tokio::spawn(supervise("bluetooth", bluetooth::run(emitter.clone())));
     }
     if enabled.weather {
         tokio::spawn(supervise("weather", weather::run(emitter.clone())));

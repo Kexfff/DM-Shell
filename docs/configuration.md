@@ -125,6 +125,7 @@ sources {
     microphone true
     camera true
     weather true
+    bluetooth true
 }
 ```
 
@@ -144,6 +145,7 @@ Turns event sources on or off; all are on by default. A bare name means `true`
 | `screencast` | A red screen icon on the right island while a niri screencast is active ("Screen is being shared" for a few seconds when it starts). |
 | `microphone` | An orange microphone icon while an app records from a microphone (not from a speaker's monitor), via `pactl`. |
 | `camera` | A green camera icon while an app has a camera (`/dev/video*`) open. |
+| `bluetooth` | "Headphones connected · 80%" / "… disconnected" on the right island, and a warning when a device's battery drops to 15%, via BlueZ. |
 | `weather` | The current temperature before the battery, from [wttr.in](https://wttr.in) via `curl`. See [`weather`](#weather). |
 
 ## `timing`

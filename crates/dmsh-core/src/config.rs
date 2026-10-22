@@ -105,6 +105,7 @@ pub struct Sources {
     pub microphone: bool,
     pub camera: bool,
     pub weather: bool,
+    pub bluetooth: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -140,6 +141,7 @@ impl Default for Config {
                 microphone: true,
                 camera: true,
                 weather: true,
+                bluetooth: true,
             },
             timing: Timing {
                 osd: Duration::from_millis(1500),
@@ -426,6 +428,7 @@ impl Parser<'_> {
                 "microphone" => &mut sources.microphone,
                 "camera" => &mut sources.camera,
                 "weather" => &mut sources.weather,
+                "bluetooth" => &mut sources.bluetooth,
                 other => return Err(self.error(node, format!("unknown source `{other}`"))),
             };
             *slot = self.flag(node)?;

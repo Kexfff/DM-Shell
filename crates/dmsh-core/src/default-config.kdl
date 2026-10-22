@@ -60,6 +60,7 @@ sources {
     microphone true
     camera true
     weather true
+    bluetooth true
 }
 
 timing {
