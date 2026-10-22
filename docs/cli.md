@@ -2,7 +2,7 @@
 
 `dmsh` with no command runs the shell. Every other command talks to the running shell
 over its socket (see [docs/ipc.md](ipc.md)), except `config`, `icons`, `schema`, `niri`,
-`claude-code`, `codex`, `mcp` (until a tool is called) and `render`, which work without it.
+`service`, `claude-code`, `codex`, `mcp` (until a tool is called) and `render`, which work without it.
 
 Global option: `--config <path>` picks the config file (default
 `$XDG_CONFIG_HOME/dmsh/config.kdl`). `dmsh <command> --help` shows each command's help.
@@ -66,8 +66,9 @@ dmsh activity push --id ID --title TITLE [options]
 
 | Command | What it does |
 |---|---|
-| `dmsh niri` | Print a niri config snippet: autostart and keybinds (with dmsh's full path). |
+| `dmsh niri [--no-autostart]` | Print a niri config snippet: autostart and keybinds (with dmsh's full path); `--no-autostart` when the systemd service starts dmsh. |
 | `dmsh claude-code [--apply\|--remove]` | Print, add or remove the Claude Code hooks and MCP server. See [docs/agents.md](agents.md#claude-code). |
+| `dmsh service [--apply\|--remove]` | Print, install and enable, or remove the systemd user unit (restart on crash). See [docs/niri.md](niri.md#autostart-and-keybinds). |
 | `dmsh codex [--apply\|--remove]` | Print, add or remove the Codex MCP server. See [docs/agents.md](agents.md#mcp-server). |
 | `dmsh hook EVENT` | Handle a Claude Code hook: `working`, `notification`, `permission`, `stop`, `end` (reads the hook JSON on stdin). |
 | `dmsh mcp` | Run the MCP server on stdio. See [docs/agents.md](agents.md#mcp-server). |

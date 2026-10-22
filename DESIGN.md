@@ -235,8 +235,11 @@ by a test); `dmsh config check` validates; `dmsh config path` locates it.
 
 ## Running it
 
-`dist/dmsh.service` is a systemd user unit bound to `graphical-session.target` (which
-`niri-session` starts); alternatively niri's `spawn-at-startup "dmsh"` (see `dmsh niri`).
+`dmsh service --apply` (which install.sh runs) writes a systemd user unit bound to
+`graphical-session.target` (which `niri-session` starts) with `Restart=on-failure`;
+release builds use `panic = "abort"`, so a panic in any thread is a crash systemd
+restarts from scratch rather than a shell missing its sources thread. Without a
+session target, niri's `spawn-at-startup` starts it instead (`dmsh niri`).
 
 Quick controls are also available to scripts and agents:
 `dmsh control wifi on|off|toggle`, `dmsh control keep-awake on|off|toggle`.

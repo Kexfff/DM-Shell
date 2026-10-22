@@ -19,8 +19,16 @@ binds {
 ```
 
 Merge the binds into your existing `binds {}` block and pick keys that are free in
-your config. Instead of `spawn-at-startup`, you can use the systemd unit in
-[`dist/dmsh.service`](../dist/dmsh.service) — one or the other, not both.
+your config.
+
+**Restart on crash.** Instead of `spawn-at-startup`, `dmsh service --apply` writes a
+systemd user unit (`~/.config/systemd/user/dmsh.service`) and enables it: dmsh starts
+with `graphical-session.target` and is restarted a second after a crash (giving up after
+5 crashes in a minute). `dmsh niri --no-autostart` prints the snippet without the
+`spawn-at-startup` line; use one or the other, not both. The target is only there when
+niri runs as a session (`niri-session`, or your display manager's niri entry). Logs go
+to `journalctl --user -u dmsh`; `systemctl --user restart dmsh` restarts it, and
+stopping it (`systemctl --user stop dmsh`, or `pkill dmsh`) keeps it stopped.
 
 ## What dmsh takes from niri
 

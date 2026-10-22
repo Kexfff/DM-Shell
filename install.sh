@@ -1,25 +1,29 @@
 #!/bin/sh
-# Installs dmsh: its dependencies, the binary, and a niri config snippet. Nothing else —
-# the rest of a desktop (polkit agent, lock screen, wallpaper...) is up to you.
+# Installs dmsh: its dependencies, the binary, a systemd user service (starts it with
+# the session, restarts it if it crashes) and a niri config snippet. Nothing else — the
+# rest of a desktop (polkit agent, lock screen, wallpaper...) is up to you.
 #
 #   ./install.sh               install (asks before changing anything outside the repo)
 #   ./install.sh --yes         don't ask
 #   ./install.sh --no-deps     skip installing packages
+#   ./install.sh --no-systemd  start dmsh from niri's spawn-at-startup instead
 #   ./install.sh --prefix DIR  install the binary to DIR/bin (default ~/.local)
-#   ./install.sh --uninstall   remove the binary and the niri snippet
+#   ./install.sh --uninstall   remove the binary, the service and the niri snippet
 set -eu
 
 prefix="$HOME/.local"
 deps=1
+systemd=1
 yes=0
 uninstall=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --yes | -y) yes=1 ;;
         --no-deps) deps=0 ;;
+        --no-systemd) systemd=0 ;;
         --prefix) prefix="$2"; shift ;;
         --uninstall) uninstall=1 ;;
-        -h | --help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -43,11 +47,14 @@ ask() {
 }
 
 if [ "$uninstall" = 1 ]; then
+    if [ -x "$bin" ]; then
+        "$bin" service --remove >/dev/null 2>&1 || true
+    fi
     rm -f "$bin" "$snippet"
     if [ -f "$niri_config" ]; then
         sed -i "/^$include_line\$/d" "$niri_config"
     fi
-    say "Removed $bin, $snippet and the include line. Restart niri or kill dmsh to stop it."
+    say "Removed $bin, its service, $snippet and the include line. Kill dmsh to stop it now."
     exit 0
 fi
 
@@ -110,9 +117,32 @@ case ":$PATH:" in
     *) note "$prefix/bin isn't on your PATH; add it to use 'dmsh' in a terminal." ;;
 esac
 
+# --- Autostart ------------------------------------------------------------------------
+# A systemd user service restarts dmsh if it crashes. It starts with graphical-session.target,
+# which niri brings up when started as a session (niri-session, or a display manager's
+# niri entry); a niri started plainly (`niri` on a tty) doesn't, so use spawn-at-startup.
+service=0
+if [ "$systemd" = 1 ] && command -v systemctl >/dev/null \
+    && systemctl --user show-environment >/dev/null 2>&1; then
+    service=1
+    if [ -n "${NIRI_SOCKET:-}" ] && ! systemctl --user is-active -q graphical-session.target; then
+        note "This niri wasn't started as a session (no graphical-session.target);"
+        note "starting dmsh from niri's spawn-at-startup instead of a systemd service."
+        service=0
+    fi
+fi
+if [ "$service" = 1 ]; then
+    "$bin" service --apply >/dev/null
+    say "Enabled the dmsh systemd user service (starts with the session, restarts on a crash)"
+fi
+
 # --- niri snippet --------------------------------------------------------------------
 mkdir -p "$niri_dir"
-"$bin" niri > "$snippet.new"
+if [ "$service" = 1 ]; then
+    "$bin" niri --no-autostart > "$snippet.new"
+else
+    "$bin" niri > "$snippet.new"
+fi
 # Don't take keys you already use: comment out dmsh's bind for them instead.
 for key in $(sed -n 's/^ *\([A-Za-z0-9+]*\) hotkey-overlay-title=.*/\1/p' "$snippet.new"); do
     key_re=$(printf '%s' "$key" | sed 's/+/\\+/g')
@@ -144,6 +174,10 @@ else
 fi
 
 if [ -n "${NIRI_SOCKET:-}" ] && ! pgrep -x dmsh >/dev/null && ask "Start dmsh now?"; then
-    niri msg action spawn -- "$bin"
+    if [ "$service" = 1 ]; then
+        systemctl --user start dmsh.service
+    else
+        niri msg action spawn -- "$bin"
+    fi
 fi
 say "Done. dmsh starts with niri from now on; see 'dmsh --help' and README.md."

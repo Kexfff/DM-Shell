@@ -6,3 +6,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
+
+[profile.release]
+# A panic anywhere (the sources thread included) ends the process, so the systemd unit
+# restarts a whole, working shell instead of one that quietly lost a thread.
+panic = "abort"

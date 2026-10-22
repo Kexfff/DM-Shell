@@ -4,6 +4,7 @@ mod headless;
 mod images;
 mod ipc;
 mod mcp;
+mod service;
 mod shell;
 
 use std::time::Duration;
@@ -64,7 +65,21 @@ enum Command {
         island: Island,
     },
     /// Print a snippet for niri's config: autostart and keybinds.
-    Niri,
+    Niri {
+        /// Leave out `spawn-at-startup` (for when the systemd service starts dmsh).
+        #[arg(long)]
+        no_autostart: bool,
+    },
+    /// Print the systemd user unit (start with the session, restart on a crash), or
+    /// install and enable it with --apply.
+    Service {
+        /// Write ~/.config/systemd/user/dmsh.service and enable it.
+        #[arg(long)]
+        apply: bool,
+        /// Disable and delete it.
+        #[arg(long, conflicts_with = "apply")]
+        remove: bool,
+    },
     /// Run an MCP server on stdio: tools for agents to show status, notify and ask.
     Mcp,
     /// Handle a Claude Code hook (reads the hook's JSON on stdin). See `dmsh claude-code`.
@@ -251,8 +266,7 @@ enum ActivityCommand {
 const NIRI_SNIPPET: &str = r#"// dmsh for niri. Save as ~/.config/niri/dmsh.kdl and add `include "dmsh.kdl"` to
 // config.kdl (install.sh does this), or merge it into config.kdl. Pick free keys.
 
-// Or use dist/dmsh.service instead of this line (not both).
-spawn-at-startup "{dmsh}"
+{autostart}
 
 binds {
     // Notification list and tray, keyboard-navigable: arrows/j/k, Enter, Delete, m (tray
@@ -356,12 +370,45 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Niri => {
+        Command::Niri { no_autostart } => {
             let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            let autostart = if no_autostart {
+                "// Started by its systemd user service (`dmsh service`), which restarts it\n\
+                 // if it crashes."
+                    .to_owned()
+            } else {
+                format!(
+                    "// Or let `dmsh service --apply` start it (and restart it if it crashes)\n\
+                     // instead of this line; not both.\n\
+                     spawn-at-startup \"{}\"",
+                    exe.display()
+                )
+            };
             print!(
                 "{}",
-                NIRI_SNIPPET.replace("{dmsh}", &exe.display().to_string())
+                NIRI_SNIPPET
+                    .replace("{autostart}", &autostart)
+                    .replace("{dmsh}", &exe.display().to_string())
             );
+            Ok(())
+        }
+        Command::Service { apply, remove } => {
+            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            if apply || remove {
+                let path = service::apply(&exe, remove)?;
+                if remove {
+                    println!("Disabled and removed {}.", path.display());
+                } else {
+                    println!("Wrote and enabled {}.", path.display());
+                    println!("It starts with your next session; to switch now:");
+                    println!("  pkill -x dmsh; systemctl --user start dmsh");
+                    println!(
+                        "and drop niri's spawn-at-startup for dmsh (dmsh niri --no-autostart)."
+                    );
+                }
+            } else {
+                print!("{}", service::unit(&exe));
+            }
             Ok(())
         }
         Command::Activity(cmd) => activity(cmd),

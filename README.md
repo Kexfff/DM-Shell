@@ -82,19 +82,24 @@ git clone https://github.com/Kexfff/DM-Shell && cd DM-Shell
 ./install.sh
 ```
 
-[`install.sh`](install.sh) does three things and nothing else:
+[`install.sh`](install.sh) does four things and nothing else:
 
 1. **Dependencies** — fontconfig, libxkbcommon and Rust (pacman, apt or dnf), and offers
    the optional ones for volume, battery and Wi-Fi.
 2. **The binary** — builds it and installs `~/.local/bin/dmsh` (`--prefix` to change).
-3. **The niri snippet** — writes `~/.config/niri/dmsh.kdl` (autostart and keybinds) and
+3. **A systemd user service** — starts dmsh with your session and restarts it within a
+   second if it ever crashes. It needs niri started as a session (`niri-session`, or a
+   display manager's niri entry); otherwise, or with `--no-systemd`, niri's
+   `spawn-at-startup` starts dmsh instead.
+4. **The niri snippet** — writes `~/.config/niri/dmsh.kdl` (keybinds, and autostart when
+   there's no service) and
    adds `include "dmsh.kdl"` to your `config.kdl`. Keys you already use are left alone
    (dmsh's bind for them is commented out), and the result is checked with
    `niri validate`.
 
 It asks before touching anything outside the repo; `--yes` skips the questions,
 `--no-deps` skips packages, and `./install.sh --uninstall` removes the binary, the
-snippet and the include line again.
+service, the snippet and the include line again.
 
 Only one notification daemon can run at a time: stop mako, swaync or another shell's
 notifications (dmsh also takes over when they exit).
@@ -110,9 +115,9 @@ echo 'include "dmsh.kdl"' >> ~/.config/niri/config.kdl
 
 niri starts programs with its own `PATH`, which usually doesn't include `~/.cargo/bin`,
 so the snippet refers to dmsh by its full path. To use `dmsh` in a terminal, add the
-directory to your `PATH` (fish: `fish_add_path ~/.cargo/bin`). Instead of niri's
-autostart you can use the systemd unit [`dist/dmsh.service`](dist/dmsh.service)
-(not both).
+directory to your `PATH` (fish: `fish_add_path ~/.cargo/bin`). To have it restarted if
+it crashes, use the systemd service instead of niri's autostart (not both):
+`~/.cargo/bin/dmsh service --apply` and `dmsh niri --no-autostart` for the snippet.
 
 </details>
 
