@@ -1,5 +1,6 @@
-//! Images registered by key (tray icons): raw pixels, PNG or SVG files. Each is
-//! rasterized once per pixel size it's drawn at, so animation frames only blit.
+//! Images registered by key (tray icons, avatars, album art): raw pixels, PNG, JPEG or
+//! SVG files. Each is rasterized once per pixel size it's drawn at, so animation frames
+//! only blit. Photos fill their square (cropped, not squashed) with rounded corners.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -78,11 +79,11 @@ impl Images {
         let source = &entry.source;
         let icon = entry.icon;
         let image = entry.sized.entry((w, h)).or_insert_with(|| {
-            let image = rasterize(source, w, h).map(|image| {
+            let image = rasterize(source, w, h, !icon).map(|image| {
                 if icon {
                     lighten_if_dark_monochrome(image)
                 } else {
-                    image
+                    round_corners(image)
                 }
             });
             if image.is_none() {
@@ -100,7 +101,12 @@ impl Images {
     }
 }
 
-fn rasterize(source: &ImageSource, w: u32, h: u32) -> Option<Pixmap> {
+/// `cover`: crop to the target's shape first (photos), instead of stretching.
+fn rasterize(source: &ImageSource, w: u32, h: u32, cover: bool) -> Option<Pixmap> {
+    let fit = |image: Pixmap| {
+        let image = if cover { crop_to(&image, w, h) } else { image };
+        scale(&image, w, h)
+    };
     match source {
         ImageSource::Rgba {
             width,
@@ -109,7 +115,7 @@ fn rasterize(source: &ImageSource, w: u32, h: u32) -> Option<Pixmap> {
         } => {
             let size = IntSize::from_wh(*width, *height)?;
             let image = Pixmap::from_vec(data.to_vec(), size)?;
-            Some(scale(&image, w, h))
+            Some(fit(image))
         }
         ImageSource::File(path) => {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -123,7 +129,14 @@ fn rasterize(source: &ImageSource, w: u32, h: u32) -> Option<Pixmap> {
                 resvg::render(&tree, transform, &mut out.as_mut());
                 Some(out)
             } else {
-                Some(scale(&Pixmap::load_png(path).ok()?, w, h))
+                let data = std::fs::read(path).ok()?;
+                // By content, not name: cached album art has no reliable extension.
+                let image = if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+                    decode_jpeg(&data)?
+                } else {
+                    Pixmap::decode_png(&data).ok()?
+                };
+                Some(fit(image))
             }
         }
     }
@@ -158,6 +171,79 @@ fn lighten_if_dark_monochrome(mut image: Pixmap) -> Pixmap {
         let a = u32::from(px[3]);
         for (channel, light) in px.iter_mut().zip(LIGHT) {
             *channel = ((u32::from(light) * a + 127) / 255) as u8;
+        }
+    }
+    image
+}
+
+fn decode_jpeg(data: &[u8]) -> Option<Pixmap> {
+    use zune_jpeg::zune_core::{
+        bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions,
+    };
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    // Opaque, so already premultiplied.
+    let size = IntSize::from_wh(u32::from(info.width), u32::from(info.height))?;
+    Pixmap::from_vec(pixels, size)
+}
+
+/// The middle of `image` with the aspect ratio of `w`×`h`.
+fn crop_to(image: &Pixmap, w: u32, h: u32) -> Pixmap {
+    let (iw, ih) = (image.width() as f32, image.height() as f32);
+    let target = w as f32 / h as f32;
+    let (cw, ch) = if iw / ih > target {
+        ((ih * target).round(), ih)
+    } else {
+        (iw, (iw / target).round())
+    };
+    let (cw, ch) = (cw.max(1.0) as u32, ch.max(1.0) as u32);
+    if (cw, ch) == (image.width(), image.height()) {
+        return image.clone();
+    }
+    let Some(mut out) = Pixmap::new(cw, ch) else {
+        return image.clone();
+    };
+    let dx = -((image.width() - cw) as i32 / 2);
+    let dy = -((image.height() - ch) as i32 / 2);
+    out.draw_pixmap(
+        dx,
+        dy,
+        image.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    out
+}
+
+/// Rounds a photo's corners (a fifth of its size), like the islands around it.
+fn round_corners(mut image: Pixmap) -> Pixmap {
+    let (w, h) = (image.width(), image.height());
+    let r = w.min(h) as f32 * 0.2;
+    if r < 1.0 {
+        return image;
+    }
+    let pixels = image.pixels_mut();
+    for y in 0..h {
+        for x in 0..w {
+            // Distance from the nearest corner circle's center, for pixels in a corner.
+            let cx = (x as f32 + 0.5).clamp(r, w as f32 - r);
+            let cy = (y as f32 + 0.5).clamp(r, h as f32 - r);
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let coverage = (r - d + 0.5).clamp(0.0, 1.0);
+            if coverage < 1.0 {
+                let p = pixels[(y * w + x) as usize];
+                let scale = |c: u8| (c as f32 * coverage).round() as u8;
+                pixels[(y * w + x) as usize] = tiny_skia::PremultipliedColorU8::from_rgba(
+                    scale(p.red()),
+                    scale(p.green()),
+                    scale(p.blue()),
+                    scale(p.alpha()),
+                )
+                .unwrap_or(p);
+            }
         }
     }
     image

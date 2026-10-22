@@ -36,7 +36,7 @@ Successful replies are `{"ok": {"type": ...}}` with type `done`, `subscribed`,
 | `push` | an activity spec (below) | Create or update an activity. |
 | `dismiss` | `id` | Remove an activity; replies `dismissed` with `existed`. |
 | `clear` | `island`: `"right"` or `"center"` (optional) | Remove all activities, or one island's. |
-| `invoke` | `id`, `key` | Invoke an action as if clicked; dismisses unless `keep_on_action`. |
+| `invoke` | `id`, `key` | Invoke an action as if clicked; dismisses unless `keep_on_action`. Activities with `playback` also take `seek:<ms>`. |
 | `state` | — | What the islands show and every live activity. |
 | `subscribe` | — | Keep the connection open and stream events (below). |
 | `control` | `control`: `"wifi"`, `"dnd"` or `"keep-awake"`, `state`: bool (optional, omitted = toggle) | Set a quick control. |
@@ -70,7 +70,7 @@ Successful replies are `{"ok": {"type": ...}}` with type `done`, `subscribed`,
 | `body` | — | Secondary text, shown when expanded. |
 | `progress` | — | 0.0–1.0 (clamped); draws a bar. |
 | `icon` | — | Built-in icon name; without one, a dot in the priority color. |
-| `image` | — | A picture shown instead of the icon: a PNG or SVG path (or `file://` URI), or an icon-theme name. Unusable images fall back to `icon`. |
+| `image` | — | A picture shown instead of the icon: a PNG, JPEG or SVG path (or `file://` URI), or an icon-theme name. Pictures (not icon-theme art) fill a rounded square, and when expanded show large beside the title, like album art. Unusable images fall back to `icon`. |
 | `app` | — | Who it's from; shown above the title when expanded. |
 | `placement` | `flow` | `center`, `right`, or `flow` (center for `center_ms`, then right). |
 | `priority` | `normal` | `low`, `normal`, `high`, `critical`. |
@@ -78,6 +78,7 @@ Successful replies are `{"ok": {"type": ...}}` with type `done`, `subscribed`,
 | `center_ms` | `2000` | Center phase of a `flow` activity, counted from its **first** push. |
 | `actions` | `[]` | Up to 8 `{key, label, icon?}`. `key: "default"` = click on the activity itself (not drawn as a button). Icon-only actions (empty label) render as a centered icon row. |
 | `keep_on_action` | `false` | Stay after an action is invoked. |
+| `playback` | — | `{position_ms, length_ms, playing}`: a progress bar with the time played and left when expanded, moving on its own while `playing` (the position is as of the push). Clicking or dragging it invokes `seek:<ms>`, which also works from `invoke`. |
 
 Text fields are limited to 1024 bytes; at most 256 activities live at once.
 

@@ -318,6 +318,10 @@ pub enum Target {
     Slider(Slider),
     /// Back from the slider to the buttons.
     CloseSlider,
+    /// A playback bar: press (and drag) to seek.
+    Seek {
+        id: String,
+    },
     /// Scroll the expanded right island's list by this many rows.
     Scroll(i32),
 }
@@ -440,6 +444,120 @@ fn icon(a: &ActivityView, theme: &Theme, x: f32, y: f32, size: f32) -> Draw {
     }
 }
 
+/// Album art (or any picture) large at the left, with the caption, title and body beside
+/// it; returns where the header ends.
+fn art_header(
+    a: &ActivityView,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    w: f32,
+    first_line_w: impl Fn(f32) -> f32,
+    items: &mut Vec<Draw>,
+) -> f32 {
+    let art = 56.0;
+    items.push(icon(a, theme, EXPANDED_PAD, EXPANDED_PAD, art));
+    let x = EXPANDED_PAD + art + 12.0;
+    let text_w = w - x - EXPANDED_PAD;
+    let mut lines = Vec::new();
+    let mut first = true;
+    let mut line = |m: &mut dyn Measure, s: &str, style: TextStyle, color: Color, max_lines| {
+        let width = if first { first_line_w(text_w) } else { text_w };
+        first = false;
+        lines.push(text(m, s, style, color, width, max_lines));
+    };
+    if let Some(app) = a.app.as_deref().filter(|s| !s.is_empty()) {
+        line(
+            m,
+            app,
+            TextStyle::new(11.5, Weight::Semibold),
+            theme.text_secondary,
+            1,
+        );
+    }
+    line(
+        m,
+        &a.title,
+        TextStyle::new(15.0, Weight::Semibold),
+        theme.text,
+        1,
+    );
+    if let Some(body) = a.body.as_deref().filter(|s| !s.is_empty()) {
+        line(
+            m,
+            body,
+            TextStyle::new(13.0, Weight::Regular),
+            theme.text_secondary,
+            2,
+        );
+    }
+    // Centered against the art when shorter than it.
+    let total: f32 = lines.iter().map(|(_, _, h)| h).sum::<f32>() + 2.0 * (lines.len() - 1) as f32;
+    let mut y = EXPANDED_PAD + ((art - total) / 2.0).max(0.0);
+    for (t, _, th) in lines {
+        items.push(place(t, x, y));
+        y += th + 2.0;
+    }
+    (y - 2.0).max(EXPANDED_PAD + art)
+}
+
+/// `1:05`, or `1:02:05` past an hour.
+fn clock_time(ms: u64) -> String {
+    let s = ms / 1000;
+    match s / 3600 {
+        0 => format!("{}:{:02}", s / 60, s % 60),
+        h => format!("{h}:{:02}:{:02}", s / 60 % 60, s % 60),
+    }
+}
+
+/// A progress bar for playback with the time played and left under it; clicking or
+/// dragging on it seeks. Returns its height.
+fn playback_bar(
+    a: &ActivityView,
+    p: crate::activity::Playback,
+    theme: &Theme,
+    m: &mut dyn Measure,
+    rect: Rect,
+    items: &mut Vec<Draw>,
+    hits: &mut Vec<Hit>,
+) -> f32 {
+    let fraction = p.position_ms as f32 / p.length_ms as f32;
+    items.extend(bar(theme, rect, fraction));
+    let style = TextStyle::new(11.0, Weight::Medium);
+    let left = p.length_ms.saturating_sub(p.position_ms);
+    let (played, _, th) = text(
+        m,
+        &clock_time(p.position_ms),
+        style,
+        theme.text_secondary,
+        80.0,
+        1,
+    );
+    let (remaining, rw, _) = text(
+        m,
+        &format!("-{}", clock_time(left)),
+        style,
+        theme.text_secondary,
+        80.0,
+        1,
+    );
+    let ty = rect.bottom() + 5.0;
+    items.push(place(played, rect.x, ty));
+    items.push(place(remaining, rect.right() - rw, ty));
+    // Easier to hit than the 4 px bar.
+    hits.push(Hit {
+        rect: Rect::new(rect.x, rect.y - 8.0, rect.w, rect.h + 16.0),
+        target: Target::Seek { id: a.id.clone() },
+        highlight: false,
+        keyboard: false,
+    });
+    rect.h + 5.0 + th
+}
+
+/// Where on a playback bar `x` falls, 0.0 to 1.0.
+pub fn seek_fraction(bar: Rect, x: f32) -> f32 {
+    ((x - bar.x) / bar.w.max(1.0)).clamp(0.0, 1.0)
+}
+
 fn bar(theme: &Theme, rect: Rect, progress: f32) -> [Draw; 2] {
     let fill = Rect {
         w: (rect.w * progress).max(rect.h),
@@ -557,48 +675,65 @@ fn activity_expanded(
         items.push(place(c, w - EXPANDED_PAD - cw, EXPANDED_PAD - 2.0));
         clock_w = cw + 12.0;
     }
-    let title_style = TextStyle::new(15.0, Weight::Semibold);
-    let title_w = w - title_x - EXPANDED_PAD;
     let has_caption = a.app.as_deref().is_some_and(|s| !s.is_empty());
     let first_line_w = |full: f32| full - clock_w;
-    let title_max = if has_caption {
-        title_w
+    let mut y = if a.image.is_some() {
+        art_header(a, theme, m, w, first_line_w, &mut items)
     } else {
-        first_line_w(title_w)
-    };
-    let (t, _, th) = text(m, &a.title, title_style, theme.text, title_max, 1);
+        let title_style = TextStyle::new(15.0, Weight::Semibold);
+        let title_w = w - title_x - EXPANDED_PAD;
+        let title_max = if has_caption {
+            title_w
+        } else {
+            first_line_w(title_w)
+        };
+        let (t, _, th) = text(m, &a.title, title_style, theme.text, title_max, 1);
 
-    // Who it's from, as a small caption above the title.
-    let mut top = EXPANDED_PAD;
-    if let Some(app) = a.app.as_deref().filter(|s| !s.is_empty()) {
-        let style = TextStyle::new(11.5, Weight::Semibold);
-        let (c, _, ch) = text(
+        // Who it's from, as a small caption above the title.
+        let mut top = EXPANDED_PAD;
+        if let Some(app) = a.app.as_deref().filter(|s| !s.is_empty()) {
+            let style = TextStyle::new(11.5, Weight::Semibold);
+            let (c, _, ch) = text(
+                m,
+                app,
+                style,
+                theme.text_secondary,
+                first_line_w(title_w),
+                1,
+            );
+            items.push(place(c, title_x, top - 2.0));
+            top += ch;
+        }
+        let row = icon_size.max(th);
+        let icon_y = top + (row - icon_size) / 2.0;
+        items.push(icon(a, theme, EXPANDED_PAD, icon_y, icon_size));
+        items.push(place(t, title_x, top + (row - th) / 2.0));
+        let mut y = top + row;
+        if let Some(body) = &a.body {
+            let style = TextStyle::new(13.0, Weight::Regular);
+            let (b, _, bh) = text(m, body, style, theme.text_secondary, inner, 3);
+            items.push(place(b, EXPANDED_PAD, y + 6.0));
+            y += 6.0 + bh;
+        }
+        y
+    };
+    let mut hits = Vec::new();
+    if let Some(playback) = a.playback.filter(|p| p.length_ms > 0) {
+        y += 14.0;
+        y += playback_bar(
+            a,
+            playback,
+            theme,
             m,
-            app,
-            style,
-            theme.text_secondary,
-            first_line_w(title_w),
-            1,
+            Rect::new(EXPANDED_PAD, y, inner, 4.0),
+            &mut items,
+            &mut hits,
         );
-        items.push(place(c, title_x, top - 2.0));
-        top += ch;
-    }
-    let row = icon_size.max(th);
-    let icon_y = top + (row - icon_size) / 2.0;
-    items.push(icon(a, theme, EXPANDED_PAD, icon_y, icon_size));
-    items.push(place(t, title_x, top + (row - th) / 2.0));
-    let mut y = top + row;
-    if let Some(body) = &a.body {
-        let style = TextStyle::new(13.0, Weight::Regular);
-        let (b, _, bh) = text(m, body, style, theme.text_secondary, inner, 3);
-        items.push(place(b, EXPANDED_PAD, y + 6.0));
-        y += 6.0 + bh;
     }
     if let Some(p) = a.progress {
         items.extend(bar(theme, Rect::new(EXPANDED_PAD, y + 10.0, inner, 5.0), p));
         y += 10.0 + 5.0;
     }
-    let mut hits = Vec::new();
     let buttons: Vec<&Action> = a
         .actions
         .iter()
@@ -1566,6 +1701,7 @@ pub(crate) mod tests {
             actions: Vec::new(),
             priority: Priority::Normal,
             lasting: false,
+            playback: None,
         }
     }
 

@@ -29,7 +29,10 @@ Both are solid black, Apple-style pills (the first and default theme).
 
 - **Center island** — the single most important thing right now. Idle content: clock.
   Expands (floating over windows) on hover/click. When media is playing or paused, the
-  expanded center shows media controls. Lasting center activities (media, an agent's
+  expanded center shows media controls, album art and a seekable progress bar. The bar
+  moves by itself: a playback position is stored with the time it was reported, and only
+  while the expanded center shows something playing does a once-a-second tick redraw
+  it. Lasting center activities (media, an agent's
   status) show the clock beside them, compact and expanded, so the time is never hidden
   for long; brief ones (OSDs, a new notification) cover it.
 - **Right island** — less important, ambient things: chat messages, Wi-Fi changes, the
@@ -140,7 +143,7 @@ joins in), "Screen is being shared" / "Microphone in use" / "Camera in use", wit
 app's name when known, shows on the right island for `timing.status`.
 
 | brightness | inotify on `/sys/class/backlight/*/brightness` | center OSD, 1.5 s |
-| media | MPRIS on the session bus (playerctld ignored) | center, low priority; newest playing player, else newest paused (kept 5 min) |
+| media | MPRIS on the session bus (playerctld ignored) | center, low priority; newest playing player, else newest paused (kept 5 min). Title, artist, the player's `Identity`; album art from `mpris:artUrl` (`file://` as is, `https://` downloaded and `data:` decoded into `~/.cache/dmsh/art`, newest 30 kept); position from `Position` (read on every status/metadata change and `Seeked`) and `mpris:length`, seeking with `SetPosition` |
 | power | UPower `DisplayDevice` | right: charging / on battery / fully charged; battery low ≤ 20 % (flow, high), critical ≤ 5 % (center, critical) |
 | network | NetworkManager `PrimaryConnection`, settled for 1.5 s | right: "Wi-Fi: <name>", "Disconnected" |
 | notifications | dmsh owns `org.freedesktop.Notifications` | flow activity per notification; urgency → priority; actions; app name; picture from `image-data` → `image-path` → app icon → `icon_data`; markup stripped to plain text; emits `ActionInvoked` / `NotificationClosed` with the right reason |

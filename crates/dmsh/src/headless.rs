@@ -54,8 +54,22 @@ pub fn render(opts: Options) -> Result<()> {
     let background = opts.background.as_deref().map(parse_color).transpose()?;
 
     let mut images = crate::images::ImageResolver::new();
+    // A relative file (`cover.jpg`) is next to the fixture; a bare name is an icon.
+    let fixture_dir = opts
+        .activities
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).parent())
+        .map(|d| d.to_path_buf());
     for (_, spec) in &mut pending {
-        if let Some(image) = spec.image.take() {
+        if let Some(mut image) = spec.image.take() {
+            if let Some(dir) = &fixture_dir
+                && !image.starts_with('/')
+                && !image.contains("://")
+                && std::path::Path::new(&image).extension().is_some()
+                && let Ok(path) = dir.join(&image).canonicalize()
+            {
+                image = path.display().to_string();
+            }
             spec.image = images.resolve(&image, &mut renderer);
         }
     }

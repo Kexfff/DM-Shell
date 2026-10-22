@@ -134,6 +134,7 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         config_path: config_path.clone(),
         reload_timer: None,
         hold_timer: None,
+        playback_timer: None,
         islands: Vec::new(),
         activities: Activities::default(),
         views: Views::default(),
@@ -190,6 +191,9 @@ pub struct Shell {
     reload_timer: Option<RegistrationToken>,
     /// Ticks while a session menu option is held, to animate the fill and fire at the end.
     hold_timer: Option<RegistrationToken>,
+    /// Ticks once a second while an expanded center shows something playing, so its
+    /// time moves; nothing runs otherwise.
+    playback_timer: Option<RegistrationToken>,
     registry_state: RegistryState,
     seat_state: SeatState,
     pointer: Option<wl_pointer::WlPointer>,
@@ -348,6 +352,10 @@ struct OutputSurface {
     /// The volume or microphone button is pressed: a short press opens its slider, a
     /// long one mutes. Holds the mute timer, `None` once it fired.
     level_press: Option<(Slider, Option<RegistrationToken>)>,
+    /// A playback bar being dragged: the activity, the bar's hit area, and where (0–1).
+    seek: Option<(String, Rect, f32)>,
+    /// The expanded center here shows playback that's playing (see `playback_timer`).
+    playing: bool,
     /// A frame callback is outstanding; the next draw happens when it fires.
     frame_pending: bool,
     /// Timestamp of the last animation frame, for frame-rate independent springs.
@@ -408,6 +416,10 @@ impl Shell {
             Request::Invoke { id, key } => match self.activities.action(&id, &key) {
                 None => Err(format!("`{id}` has no action `{key}`")),
                 Some(keep) => {
+                    // The island seeks right away; the player's own update follows.
+                    if let Some(ms) = dmsh_core::activity::seek_target(&key) {
+                        self.activities.seek(&id, ms, now);
+                    }
                     self.broadcast(&Event::ActionInvoked {
                         id: id.clone(),
                         key: key.clone(),
@@ -1054,6 +1066,8 @@ impl Shell {
             }
             // Pressing a track starts a drag; see the pointer handler.
             Target::Slider(_) => return,
+            // Pressing a playback bar starts seeking; see the pointer handler.
+            Target::Seek { .. } => return,
             Target::Invoke { id, key } => Request::Invoke { id, key },
             Target::Dismiss { id } => Request::Dismiss { id },
             Target::ClearRight => Request::Clear {
@@ -1132,8 +1146,49 @@ impl Shell {
 
     /// The mouse button or Enter came up: finishes a press on the volume or microphone
     /// button (a short one opens the slider), a drag, or cancels a session hold.
+    /// Keeps the views fresh once a second while some expanded center plays media.
+    fn tick_playback(&mut self) {
+        if self.playback_timer.is_some() {
+            return;
+        }
+        let timer = Timer::from_duration(Duration::from_secs(1));
+        let token = self.loop_handle.insert_source(timer, |_, _, shell| {
+            shell.refresh();
+            if shell.islands.iter().any(|i| i.playing) {
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            } else {
+                shell.playback_timer = None;
+                TimeoutAction::Drop
+            }
+        });
+        self.playback_timer = token.ok();
+    }
+
+    /// Lets go of a playback bar: seeks there, like `dmsh activity invoke <id> seek:<ms>`.
+    fn finish_seek(&mut self, index: usize) {
+        let Some((id, _, fraction)) = self.islands[index].seek.take() else {
+            return;
+        };
+        let length = self
+            .activities
+            .view(Instant::now())
+            .center
+            .filter(|c| c.id == id)
+            .and_then(|c| c.playback)
+            .map(|p| p.length_ms);
+        let Some(length) = length else {
+            self.update_stage(index);
+            return;
+        };
+        let key = format!("seek:{}", (fraction * length as f32) as u64);
+        if let Response::Error(e) = self.handle(Request::Invoke { id, key }) {
+            log::warn!("seek failed: {e}");
+        }
+    }
+
     fn release(&mut self, index: usize) {
         self.cancel_hold(index);
+        self.finish_seek(index);
         self.islands[index].drag = None;
         // A short press opens the slider; after a long one (it muted) nothing more happens.
         if let Some((slider, Some(token))) = self.islands[index].level_press.take() {
@@ -1299,6 +1354,26 @@ impl Shell {
             .filter(|m| m.output == index)
             .map(OpenMenu::view);
         let island = &mut self.islands[index];
+        if island.pinned.or(island.hover) != Some(IslandKind::Center) {
+            island.seek = None;
+        }
+        // While seeking, the bar follows the pointer.
+        if let Some((id, _, fraction)) = &island.seek
+            && let Some(center) = view.center.as_mut().filter(|c| c.id == *id)
+            && let Some(p) = &mut center.playback
+        {
+            p.position_ms = (*fraction * p.length_ms as f32) as u64;
+        }
+        island.playing = island.pinned.or(island.hover) == Some(IslandKind::Center)
+            && view
+                .center
+                .as_ref()
+                .and_then(|c| c.playback)
+                .is_some_and(|p| p.playing);
+        if island.playing {
+            self.tick_playback();
+        }
+        let island = &mut self.islands[index];
         let Some((width, _)) = island.size else {
             return;
         };
@@ -1403,6 +1478,8 @@ impl Shell {
             slider: None,
             drag: None,
             level_press: None,
+            seek: None,
+            playing: false,
             frame_pending: false,
             last_frame_ms: None,
         });
@@ -1810,6 +1887,10 @@ impl PointerHandler for Shell {
                     if let Some((slider, track)) = self.islands[index].drag {
                         self.set_level(slider, dmsh_core::slider_value(track, x));
                     }
+                    if let Some((_, bar, fraction)) = &mut self.islands[index].seek {
+                        *fraction = dmsh_core::seek_fraction(*bar, x);
+                        self.update_stage(index);
+                    }
                     if let Some((slider, _)) = self.islands[index].level_press
                         && self.islands[index].stage.target_at(x, y) != Some(Target::Level(slider))
                     {
@@ -1833,6 +1914,7 @@ impl PointerHandler for Shell {
                     self.cancel_hold(index);
                     self.cancel_level_press(index);
                     self.islands[index].drag = None;
+                    self.islands[index].seek = None;
                     self.set_pointer(index, None);
                     self.set_hover(index, None);
                 }
@@ -1874,6 +1956,16 @@ impl PointerHandler for Shell {
                     {
                         self.islands[index].drag = Some((slider, rect));
                         self.set_level(slider, dmsh_core::slider_value(rect, x));
+                    } else if let Some(Hit {
+                        target: Target::Seek { id },
+                        rect,
+                        ..
+                    }) = &hit
+                        && button == BTN_LEFT
+                    {
+                        let fraction = dmsh_core::seek_fraction(*rect, x);
+                        self.islands[index].seek = Some((id.clone(), *rect, fraction));
+                        self.update_stage(index);
                     } else if let Some(hit) = hit {
                         self.click(index, hit.target, button);
                     }

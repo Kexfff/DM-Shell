@@ -106,6 +106,25 @@ pub struct ActivitySpec {
     /// How long a `flow` activity stays in the center before moving right.
     #[serde(default = "default_center_ms")]
     pub center_ms: u64,
+    /// Media playback position: a progress bar with times that moves while playing, and
+    /// can be clicked to seek (invoking `seek:<ms>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback: Option<Playback>,
+}
+
+/// The position in a `seek:<ms>` action key.
+pub fn seek_target(key: &str) -> Option<u64> {
+    key.strip_prefix("seek:")?.parse().ok()
+}
+
+/// Where playback is. In a spec, `position_ms` is as of the push; in a view, as of now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Playback {
+    pub position_ms: u64,
+    pub length_ms: u64,
+    /// The position moves on its own while playing.
+    #[serde(default)]
+    pub playing: bool,
 }
 
 fn default_center_ms() -> u64 {
@@ -128,6 +147,7 @@ impl ActivitySpec {
             priority: Priority::default(),
             ttl_ms: None,
             center_ms: default_center_ms(),
+            playback: None,
         }
     }
 
@@ -151,6 +171,9 @@ impl ActivitySpec {
             .any(|a| a.key.is_empty() || too_long(&a.key) || too_long(&a.label))
         {
             return Err("action keys must be non-empty; keys and labels are length-limited".into());
+        }
+        if let Some(p) = &mut self.playback {
+            p.position_ms = p.position_ms.min(p.length_ms);
         }
         if let Some(p) = self.progress {
             if !p.is_finite() {
@@ -193,6 +216,9 @@ pub struct ActivityView {
     /// shows the clock beside these.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lasting: bool,
+    /// Playback position as of when the view was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback: Option<Playback>,
 }
 
 impl ActivityView {
@@ -468,7 +494,17 @@ impl Entry {
         self.spec.ttl_ms.is_some() || self.spec.placement == Placement::Flow
     }
 
-    fn view(&self) -> ActivityView {
+    fn view(&self, now: Instant) -> ActivityView {
+        let playback = self.spec.playback.map(|p| {
+            let moved = match p.playing {
+                true => now.saturating_duration_since(self.updated).as_millis() as u64,
+                false => 0,
+            };
+            Playback {
+                position_ms: (p.position_ms + moved).min(p.length_ms),
+                ..p
+            }
+        });
         ActivityView {
             id: self.spec.id.clone(),
             title: self.spec.title.clone(),
@@ -480,6 +516,7 @@ impl Entry {
             actions: self.spec.actions.clone(),
             priority: self.spec.priority,
             lasting: !self.is_transient(),
+            playback,
         }
     }
 }
@@ -518,6 +555,20 @@ impl Activities {
         Ok(())
     }
 
+    /// Moves an activity's playback position (the island seeks right away; the player's
+    /// own update follows). Returns whether it has playback.
+    pub fn seek(&mut self, id: &str, position_ms: u64, now: Instant) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|e| e.spec.id == id) else {
+            return false;
+        };
+        let Some(p) = &mut entry.spec.playback else {
+            return false;
+        };
+        p.position_ms = position_ms.min(p.length_ms);
+        entry.updated = now;
+        true
+    }
+
     /// Removes an activity; returns whether it existed.
     pub fn dismiss(&mut self, id: &str) -> bool {
         let before = self.entries.len();
@@ -525,9 +576,13 @@ impl Activities {
         self.entries.len() != before
     }
 
-    /// Whether `id` has an action `key`; `Some(keep_on_action)` if it does.
+    /// Whether `id` has an action `key`; `Some(keep_on_action)` if it does. Activities
+    /// with playback also take `seek:<ms>` (and stay).
     pub fn action(&self, id: &str, key: &str) -> Option<bool> {
         let entry = self.entries.iter().find(|e| e.spec.id == id)?;
+        if entry.spec.playback.is_some() && seek_target(key).is_some() {
+            return Some(true);
+        }
         let has = entry.spec.actions.iter().any(|a| a.key == key);
         has.then_some(entry.spec.keep_on_action)
     }
@@ -588,7 +643,7 @@ impl Activities {
             .filter(|e| e.island(now, self.quiet) == Island::Center)
             .filter(|e| focused || !e.is_transient())
             .max_by_key(|e| (e.spec.priority, e.is_transient(), e.updated))
-            .map(Entry::view);
+            .map(|e| e.view(now));
 
         let mut right: Vec<&Entry> = live()
             .filter(|e| e.island(now, self.quiet) == Island::Right)
@@ -598,7 +653,11 @@ impl Activities {
             std::cmp::Reverse(e.moves_right_at().unwrap_or(e.created).max(e.updated))
         });
         let right = (!right.is_empty()).then(|| RightView {
-            items: right.iter().take(RIGHT_ITEMS).map(|e| e.view()).collect(),
+            items: right
+                .iter()
+                .take(RIGHT_ITEMS)
+                .map(|e| e.view(now))
+                .collect(),
             total: right.len(),
         });
 
@@ -724,6 +783,51 @@ mod tests {
         };
         a.push(urgent, t0).unwrap();
         assert_eq!(center_id(&a, t0), Some("perm".into()));
+    }
+
+    #[test]
+    fn playback_moves_while_playing_and_seeks() {
+        let t0 = Instant::now();
+        let mut a = Activities::default();
+        let playing = Playback {
+            position_ms: 10_000,
+            length_ms: 60_000,
+            playing: true,
+        };
+        a.push(
+            ActivitySpec {
+                playback: Some(playing),
+                ..spec("media", Placement::Center)
+            },
+            t0,
+        )
+        .unwrap();
+        let at = |a: &Activities, t| a.view(t).center.unwrap().playback.unwrap().position_ms;
+        assert_eq!(at(&a, t0 + ms(2500)), 12_500);
+        assert_eq!(at(&a, t0 + ms(120_000)), 60_000, "stops at the end");
+        assert!(a.seek("media", 30_000, t0 + ms(3000)));
+        assert_eq!(at(&a, t0 + ms(4000)), 31_000);
+        assert!(!a.seek("nope", 0, t0));
+        assert_eq!(
+            a.action("media", "seek:5000"),
+            Some(true),
+            "seeking is an action"
+        );
+        assert_eq!(a.action("media", "seek:x"), None);
+
+        let paused = Playback {
+            playing: false,
+            ..playing
+        };
+        a.push(
+            ActivitySpec {
+                playback: Some(paused),
+                ..spec("media", Placement::Center)
+            },
+            t0,
+        )
+        .unwrap();
+        assert_eq!(at(&a, t0 + ms(5000)), 10_000, "paused stays put");
     }
 
     #[test]

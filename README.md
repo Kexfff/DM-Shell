@@ -26,8 +26,9 @@ AI agents can put things on the islands and wait for answers.
   (avatars), actions, urgency and replace ids; markup is cleaned to plain text. A
   scrollable list on the right island with per-item dismiss and "Clear all".
 - **On-screen displays** for volume, brightness and keyboard layout.
-- **Media** (MPRIS): what's playing, with the clock beside it, and previous / play-pause /
-  next when expanded.
+- **Media** (MPRIS): what's playing with its album art and the clock beside it; expanded,
+  the artist and player, a progress bar you can click or drag to seek, and previous /
+  play-pause / next.
 - **System tray** (StatusNotifierItem) with app menus shown inside the island.
 - **Battery** always on the right island; a critical battery also takes the center.
 - **Quick controls**: Wi-Fi on/off, do not disturb (notifications skip the center unless
