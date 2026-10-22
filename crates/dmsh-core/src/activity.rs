@@ -212,8 +212,8 @@ pub struct ActivityView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
     pub priority: Priority,
-    /// Stays until removed (media, a status) rather than leaving on its own; the center
-    /// shows the clock beside these.
+    /// Stays a while (media, a status, "Working") rather than popping up briefly (an OSD,
+    /// a new notification); the center shows the clock beside these.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lasting: bool,
     /// Playback position as of when the view was made.
@@ -226,6 +226,9 @@ impl ActivityView {
         self.actions.iter().any(|a| a.key == key)
     }
 }
+
+/// Activities that stay at least this long count as lasting (see `ActivityView::lasting`).
+const LASTING_MS: u64 = 60_000;
 
 /// Most right-island items carried in a view (the expanded list scrolls through these).
 pub const RIGHT_ITEMS: usize = 32;
@@ -494,6 +497,13 @@ impl Entry {
         self.spec.ttl_ms.is_some() || self.spec.placement == Placement::Flow
     }
 
+    /// Stays a while (media, even paused; an agent's "Working"), as opposed to a pop-up
+    /// (an OSD, a notification's moment in the center). The center shows the clock
+    /// beside these.
+    fn is_lasting(&self) -> bool {
+        self.spec.placement != Placement::Flow && self.spec.ttl_ms.is_none_or(|ms| ms >= LASTING_MS)
+    }
+
     fn view(&self, now: Instant) -> ActivityView {
         let playback = self.spec.playback.map(|p| {
             let moved = match p.playing {
@@ -515,7 +525,7 @@ impl Entry {
             app: self.spec.app.clone(),
             actions: self.spec.actions.clone(),
             priority: self.spec.priority,
-            lasting: !self.is_transient(),
+            lasting: self.is_lasting(),
             playback,
         }
     }
@@ -840,6 +850,18 @@ mod tests {
         let media = a.view_for(t0, false).center.unwrap();
         assert_eq!((notif.id.as_str(), notif.lasting), ("notif", false));
         assert_eq!((media.id.as_str(), media.lasting), ("media", true));
+
+        // Expiring eventually still counts ("Working", paused media); an OSD doesn't.
+        let mut b = Activities::default();
+        let with_ttl = |id: &str, ms| ActivitySpec {
+            ttl_ms: Some(ms),
+            ..spec(id, Placement::Center)
+        };
+        b.push(with_ttl("working", 600_000), t0).unwrap();
+        assert!(b.view(t0).center.unwrap().lasting);
+        b.push(with_ttl("osd", 1500), t0).unwrap();
+        let osd = b.view(t0).center.unwrap();
+        assert_eq!((osd.id.as_str(), osd.lasting), ("osd", false));
         // The right island is the same everywhere.
         let later = t0 + ms(2000);
         assert_eq!(
