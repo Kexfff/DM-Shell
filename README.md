@@ -125,6 +125,17 @@ it crashes, use the systemd service instead of niri's autostart (not both):
 
 </details>
 
+**NixOS:** the repository is a flake with a NixOS module and a Home Manager module:
+
+```nix
+inputs.dmsh.url = "github:Kexfff/DM-Shell";
+# then, in your system's modules:
+dmsh.nixosModules.default
+{ programs.dmsh.enable = true; }
+```
+
+See [docs/nixos.md](docs/nixos.md) for the Home Manager module and the options.
+
 ## With AI agents
 
 dmsh shows what your agents are doing and lets them ask you things in the island.
@@ -182,6 +193,7 @@ what the islands display, as JSON.
 
 - [Configuration](docs/configuration.md) — every option, live reload, errors
 - [niri integration](docs/niri.md) — autostart, keybinds, keyboard navigation
+- [NixOS](docs/nixos.md) — the flake, NixOS and Home Manager modules
 - [Command line](docs/cli.md) — every command and option
 - [Scripts and agents](docs/agents.md) — Claude Code, MCP, activities, `--wait`, events
 - [IPC protocol](docs/ipc.md) — the JSON socket, for any language

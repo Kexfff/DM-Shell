@@ -328,7 +328,7 @@ fn main() -> Result<()> {
         Command::Mcp => mcp::serve(),
         Command::Hook { event } => agent::hook(event),
         Command::ClaudeCode { apply, remove } => {
-            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            let exe = self_exe()?;
             if apply || remove {
                 let settings = agent::claude_settings_path().context("$HOME is not set")?;
                 agent::apply(&settings, &exe, remove)?;
@@ -354,7 +354,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Codex { apply, remove } => {
-            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            let exe = self_exe()?;
             if apply || remove {
                 let config = agent::codex_config_path().context("$HOME is not set")?;
                 agent::apply_codex(&config, &exe, remove)?;
@@ -371,7 +371,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Niri { no_autostart } => {
-            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            let exe = self_exe()?;
             let autostart = if no_autostart {
                 "// Started by its systemd user service (`dmsh service`), which restarts it\n\
                  // if it crashes."
@@ -393,7 +393,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Service { apply, remove } => {
-            let exe = std::env::current_exe().context("locating the dmsh binary")?;
+            let exe = self_exe()?;
             if apply || remove {
                 let path = service::apply(&exe, remove)?;
                 if remove {
@@ -594,6 +594,21 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 /// Parses `76` or `76+` (charging).
+/// This binary's path, for configs that run it (niri binds, the service, agent hooks).
+/// Nix wraps programs (`bin/dmsh` sets up `PATH`, then runs `bin/.dmsh-wrapped`); point
+/// at the wrapper so it keeps doing that.
+fn self_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("locating the dmsh binary")?;
+    Ok(unwrapped(&exe).unwrap_or(exe))
+}
+
+fn unwrapped(exe: &std::path::Path) -> Option<PathBuf> {
+    let name = exe.file_name()?.to_str()?;
+    let original = name.strip_prefix('.')?.strip_suffix("-wrapped")?;
+    let wrapper = exe.with_file_name(original);
+    wrapper.is_file().then_some(wrapper)
+}
+
 /// `45` or `45:muted`.
 fn parse_level(s: &str) -> Result<Level> {
     let (percent, muted) = match s.strip_suffix(":muted") {
@@ -686,6 +701,24 @@ fn parse_enum<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nix_wrappers_are_used_instead_of_the_wrapped_binary() {
+        let dir = std::env::temp_dir().join(format!("dmsh-wrap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dmsh"), "").unwrap();
+        assert_eq!(
+            unwrapped(&dir.join(".dmsh-wrapped")),
+            Some(dir.join("dmsh"))
+        );
+        assert_eq!(unwrapped(&dir.join("dmsh")), None);
+        assert_eq!(
+            unwrapped(&dir.join(".other-wrapped")),
+            None,
+            "no wrapper there"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn durations() {
